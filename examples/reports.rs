@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use arrow::array::Float64Array;
 use arrow::array::{ArrayRef, Float32Array, LargeListArray, StringArray, UInt64Array};
 use arrow::datatypes::UInt64Type;
 use arrow::ipc::writer::FileWriter;
@@ -120,7 +121,7 @@ fn get_reports_root() -> PathBuf {
     path
 }
 
-fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
+fn report_tree(root: &Cluster<f32, VecVec<f32, f64>>, out_dir: &Path) {
     let clusters = root.subtree();
     let tree_array = {
         let names: ArrayRef = {
@@ -136,9 +137,9 @@ fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
         let (lefts, rights) = {
             let (lefts, rights): (Vec<_>, Vec<_>) = clusters
                 .iter()
-                .map(|c| match c.children() {
-                    Some([left, right]) => (Some(left.name()), Some(right.name())),
-                    None => (None, None),
+                .map(|c| {
+                    let children = c.children();
+                    (Some(children[0].name()), Some(children[1].name()))
                 })
                 .unzip();
             (
@@ -152,19 +153,19 @@ fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
             Arc::new(UInt64Array::from_iter(cardinalities))
         };
 
-        let arg_centers = {
-            let arg_centers = clusters.iter().map(|c| Some(c.arg_center() as u64));
-            Arc::new(UInt64Array::from_iter(arg_centers))
-        };
+        // let arg_centers = {
+        //     let arg_centers = clusters.iter().map(|c| Some(c.arg_center() as u64));
+        //     Arc::new(UInt64Array::from_iter(arg_centers))
+        // };
 
-        let arg_radii = {
-            let arg_radii = clusters.iter().map(|c| Some(c.arg_radius() as u64));
-            Arc::new(UInt64Array::from_iter(arg_radii))
-        };
+        // let arg_radii = {
+        //     let arg_radii = clusters.iter().map(|c| Some(c.arg_radius() as u64));
+        //     Arc::new(UInt64Array::from_iter(arg_radii))
+        // };
 
         let radii = {
             let radii = clusters.iter().map(|c| Some(c.radius()));
-            Arc::new(Float32Array::from_iter(radii))
+            Arc::new(Float64Array::from_iter(radii))
         };
 
         let lfds = {
@@ -172,10 +173,10 @@ fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
             Arc::new(Float32Array::from_iter(lfds))
         };
 
-        let polar_distances = {
-            let polar_distances = clusters.iter().map(|c| c.polar_distance());
-            Arc::new(Float32Array::from_iter(polar_distances))
-        };
+        // let polar_distances = {
+        //     let polar_distances = clusters.iter().map(|c| c.polar_distance());
+        //     Arc::new(Float32Array::from_iter(polar_distances))
+        // };
 
         RecordBatch::try_from_iter_with_nullable(vec![
             ("name", names, false),
@@ -183,11 +184,11 @@ fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
             ("left", lefts, true),
             ("right", rights, true),
             ("cardinality", cardinalities, false),
-            ("arg_center", arg_centers, false),
-            ("arg_radius", arg_radii, false),
+            // ("arg_center", arg_centers, false),
+            // ("arg_radius", arg_radii, false),
             ("radius", radii, false),
             ("lfd", lfds, false),
-            ("polar_distance", polar_distances, true),
+            // ("polar_distance", polar_distances, true),
         ])
         .unwrap()
     };
@@ -229,7 +230,7 @@ fn report_tree(root: &Cluster<f32, f32, VecVec<f32, f32>>, out_dir: &Path) {
     println!("Wrote leaves report ...");
 }
 
-fn report_linear(data: &VecVec<f32, f32>, queries: &[Vec<f32>], out_dir: &Path, batch_size: usize) -> f32 {
+fn report_linear(data: &VecVec<f32, f64>, queries: &[Vec<f32>], out_dir: &Path, batch_size: usize) -> f32 {
     let indices = data.indices();
 
     let num_batches = {
@@ -245,7 +246,7 @@ fn report_linear(data: &VecVec<f32, f32>, queries: &[Vec<f32>], out_dir: &Path, 
     for (i, batch) in indices.chunks(batch_size).enumerate() {
         let n = i + 1;
         let mut pb = tqdm!(total = queries.len(), desc = format!("Linear Batch {n}/{num_batches}"));
-        let mut array = Array2::<f32>::default((0, batch.len()));
+        let mut array = Array2::<f64>::default((0, batch.len()));
 
         for query in queries.iter() {
             let start = Instant::now();

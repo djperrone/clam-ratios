@@ -22,7 +22,7 @@ pub fn make_data(n: usize, d: usize, q: usize) -> (Vec<Vec<f32>>, Vec<Vec<f32>>,
     (data, queries, name)
 }
 
-pub fn check_search<T: Number, U: Number, D: Dataset<T, U>>(queries: &[&Vec<T>], cakes: &CAKES<T, U, D>, r: U) {
+pub fn check_search<T: Number, D: Dataset<T, f64>>(queries: &[&Vec<T>], cakes: &CAKES<T, D>, r: f64) {
     let iqp = queries
         .par_iter()
         .enumerate()

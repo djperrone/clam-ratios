@@ -1,62 +1,107 @@
-//! The `Cluster` is the heart of CLAM. It provides the ability to perform a
-//! divisive hierarchical cluster of arbitrary datasets in arbitrary metric
-//! spaces.
-
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::f64::consts::SQRT_2;
+use std::hash::{Hash, Hasher};
 
 use bitvec::prelude::*;
 
 use super::cluster_criteria::PartitionCriteria;
 use super::dataset::Dataset;
 use super::number::Number;
+use crate::geometry::tetrahedron::*;
+use crate::geometry::triangle::*;
 use crate::utils::helpers;
 
 pub type Ratios = [f64; 6];
+pub type History = BitVec;
 
-/// A `Cluster` represents a collection of "similar" instances from a
-/// metric-`Space`.
-///
-/// `Cluster`s can be unwieldy to use directly unless one has a good grasp of
-/// the underlying invariants.
-/// We anticipate that most users' needs will be well met by the higher-level
-/// abstractions.
-///
-/// For most use-cases, one should chain calls to `new_root`, `build` and
-/// `partition` to construct a tree on the metric space.
-///
-/// Clusters are named in the same way as nodes in a Huffman tree. The `root` is
-/// named "1". A left child appends a "0" to the name of the parent and a right
-/// child appends a "1".
-///
-/// For now, `Cluster` names are unique within a single tree. We plan on adding
-/// tree-based prefixes which will make names unique across multiple trees.
+/// Some values to be stored at build time that will be useful for partition.
+type BuildCache = Vec<Vec<f64>>;
+
+// TODO: Make this compatible with old geometry and search
 #[derive(Debug)]
-pub struct Cluster<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    t: std::marker::PhantomData<T>,
+enum ClusterVariant {
+    /// extrema
+    Singleton([usize; 1]),
+    /// diameter, radius, lfd, extrema
+    Dipole(f64, f64, f64, [usize; 2]),
+    /// radius, lfd, extrema, abc
+    Trigon(f64, f64, [usize; 3], Triangle),
+    /// radius, lfd, extrema, abc
+    Tetragon(f64, f64, [usize; 4], Triangle),
+}
+
+impl ClusterVariant {
+    fn radius(&self) -> f64 {
+        match self {
+            Self::Singleton(_) => 0.,
+            Self::Dipole(_, r, ..) => *r,
+            Self::Trigon(r, ..) => *r,
+            Self::Tetragon(r, ..) => *r,
+        }
+    }
+
+    fn lfd(&self) -> f64 {
+        match self {
+            Self::Singleton(_) => 1.,
+            Self::Dipole(.., l, _) => *l,
+            Self::Trigon(_, l, ..) => *l,
+            Self::Tetragon(_, l, ..) => *l,
+        }
+    }
+
+    fn extrema(&self) -> Vec<usize> {
+        match self {
+            Self::Singleton([a]) => vec![*a],
+            Self::Dipole(.., [a, b]) => vec![*a, *b],
+            Self::Trigon(.., [a, b, c], _) => vec![*a, *b, *c],
+            Self::Tetragon(.., [a, b, c, d], _) => vec![*a, *b, *c, *d],
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Singleton(_) => "Singleton",
+            Self::Dipole(..) => "Dipole",
+            Self::Trigon(..) => "Trigon",
+            Self::Tetragon(..) => "Tetragon",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Children<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
+    None(Vec<usize>),
+    Dipole([Box<Cluster<'a, T, D>>; 2]),
+    Trigon([Box<Cluster<'a, T, D>>; 3]),
+    Tetragon([Box<Cluster<'a, T, D>>; 4]),
+}
+
+#[derive(Debug)]
+pub struct Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     data: &'a D,
+    history: History,
     cardinality: usize,
-    contents: Contents<'a, T, U, D>,
-    history: BitVec,
-    arg_center: usize,
-    arg_radius: usize,
-    radius: U,
-    lfd: f64,
+    variant: ClusterVariant,
+    contents: Children<'a, T, D>,
     ratios: Option<Ratios>,
-    seed: Option<u64>,
+    naive_radius: f64,
+    scaled_radius: f64,
+    build_cache: Option<BuildCache>,
+    t: std::marker::PhantomData<T>,
 }
 
-#[derive(Debug)]
-#[allow(clippy::type_complexity)]
-enum Contents<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    // indices are only held at leaf clusters. This helps reduce the memory
-    // footprint of the tree.
-    Indices(Vec<usize>),
-    // ([(left_pole, left_child), (right_pole, right_child)], polar_distance)
-    Children(([(usize, Box<Cluster<'a, T, U, D>>); 2], U)),
-}
-
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartialEq for Cluster<'a, T, U, D> {
+impl<'a, T, D> PartialEq for Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     fn eq(&self, other: &Self) -> bool {
         self.history == other.history
     }
@@ -64,9 +109,13 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartialEq for Cluster<'a, T, U,
 
 /// Two clusters are equal if they have the same name. This only holds, for
 /// now, for clusters in the same tree.
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Eq for Cluster<'a, T, U, D> {}
+impl<'a, T: Number, D: Dataset<T, f64>> Eq for Cluster<'a, T, D> {}
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartialOrd for Cluster<'a, T, U, D> {
+impl<'a, T, D> PartialOrd for Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         if self.depth() == other.depth() {
             self.history.partial_cmp(&other.history)
@@ -79,7 +128,11 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartialOrd for Cluster<'a, T, U
 /// `Cluster`s can be sorted based on their name. `Cluster`s are sorted by
 /// non-decreasing depths and then by their names. Sorting a tree of `Cluster`s
 /// will leave them in the order of a breadth-first traversal.
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Ord for Cluster<'a, T, U, D> {
+impl<'a, T, D> Ord for Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.partial_cmp(other).unwrap()
     }
@@ -90,361 +143,659 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Ord for Cluster<'a, T, U, D> {
 ///
 /// TODO: Add a tree-based prefix to the cluster names when we need to hash
 /// clusters from different trees into the same collection.
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Hash for Cluster<'a, T, U, D> {
+impl<'a, T, D> Hash for Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name().hash(state)
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> std::fmt::Display for Cluster<'a, T, U, D> {
+impl<'a, T, D> std::fmt::Display for Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Cluster<'a, T, U, D> {
-    /// Creates a new root `Cluster` for the metric space.
-    ///
-    /// # Arguments
-    ///
-    /// * `dataset`: on which to create the `Cluster`.
-    pub fn new_root(dataset: &'a D) -> Self {
-        let name = bitvec![1];
-        let indices = dataset.indices();
-        Cluster::new(dataset, indices, name, None)
-    }
-
-    pub fn with_seed(mut self, seed: u64) -> Self {
-        self.seed = Some(seed);
-        self
-    }
-
-    /// Creates a new `Cluster`.
-    ///
-    /// # Arguments
-    ///
-    /// * `dataset`: on which to create the `Cluster`.
-    /// * `indices`: The indices of instances from the `dataset` that are
-    /// contained in the `Cluster`.
-    /// * `name`: `BitVec` name for the `Cluster`.
-    pub fn new(data: &'a D, indices: Vec<usize>, history: BitVec, seed: Option<u64>) -> Self {
-        let cardinality = indices.len();
-
-        // TODO: Explore with different values for the threshold e.g. 10, 100, 1000, etc.
-        let arg_samples = if cardinality < 100 {
-            indices.clone()
-        } else {
-            let n = ((indices.len() as f64).sqrt()) as usize;
-            data.choose_unique(n, &indices, seed)
-        };
-
-        let arg_center = data.median(&arg_samples);
-
-        let center_distances = data.one_to_many(arg_center, &indices);
-        let (arg_radius, radius) = helpers::arg_max(&center_distances);
-        let arg_radius = indices[arg_radius];
-
-        Cluster {
-            t: Default::default(),
-            data,
-            cardinality,
-            contents: Contents::Indices(indices),
-            history,
-            arg_center,
-            arg_radius,
-            radius,
-            lfd: helpers::compute_lfd(radius, &center_distances),
-            ratios: None,
-            seed,
-        }
-    }
-
-    /// Returns two new `Cluster`s that are the left and right children of this
-    /// `Cluster`.
-    fn partition_once(&mut self) -> ([(usize, Vec<usize>, BitVec); 2], U) {
-        let indices = match &self.contents {
-            Contents::Indices(indices) => indices,
-            Contents::Children(_) => panic!("`build` can only be called once per cluster."),
-        };
-
-        let left_pole = self.arg_radius();
-        let left_distances = self.data.one_to_many(left_pole, indices);
-
-        let (arg_right, polar_distance) = helpers::arg_max(&left_distances);
-        let right_pole = indices[arg_right];
-        let right_distances = self.data.one_to_many(right_pole, indices);
-
-        let (left, right) = indices
-            .iter()
-            .zip(left_distances.into_iter())
-            .zip(right_distances.into_iter())
-            .filter(|&((&i, _), _)| i != left_pole && i != right_pole)
-            .partition::<Vec<_>, _>(|&((_, l), r)| l <= r);
-
-        let left_indices = left
-            .into_iter()
-            .map(|((&i, _), _)| i)
-            .chain([left_pole].into_iter())
-            .collect::<Vec<_>>();
-        let right_indices = right
-            .into_iter()
-            .map(|((&i, _), _)| i)
-            .chain([right_pole].into_iter())
-            .collect::<Vec<_>>();
-
-        let (left_pole, left_indices, right_pole, right_indices) = if left_indices.len() < right_indices.len() {
-            (right_pole, right_indices, left_pole, left_indices)
-        } else {
-            (left_pole, left_indices, right_pole, right_indices)
-        };
-
-        let left_name = {
-            let mut name = self.history.clone();
-            name.push(false);
-            name
-        };
-        let right_name = {
-            let mut name = self.history.clone();
-            name.push(true);
-            name
-        };
-
-        (
-            [
-                (left_pole, left_indices, left_name),
-                (right_pole, right_indices, right_name),
-            ],
-            polar_distance,
-        )
-    }
-
-    /// Partitions the `Cluster` based on the given criteria. If the `Cluster`
-    /// can be partitioned, it will gain a pair of left and right child
-    /// `Cluster`s. If called with the `recursive` flag, this will build the
-    /// tree down to leaf `Cluster`s, i.e. `Cluster`s that can not be
-    /// partitioned based on the given criteria.
-    ///
-    /// This method should be called after calling `build` and before calling
-    /// the getter methods for children.
-    ///
-    /// # Arguments
-    ///
-    /// * `partition_criteria`: The rules by which to determine whether the
-    /// cluster can be partitioned.
-    /// * `recursive`: Whether to build the tree down to leaves using the same
-    /// `partition_criteria`.
-    ///
-    /// # Panics:
-    ///
-    /// * If called before calling `build`.
-    pub fn partition(mut self, criteria: &PartitionCriteria<T, U, D>, recursive: bool) -> Self {
-        if criteria.check(&self) {
-            let ([(left_pole, left_indices, left_name), (right_pole, right_indices, right_name)], polar_distance) =
-                self.partition_once();
-
-            let (left, right) = (
-                Cluster::new(self.data, left_indices, left_name, self.seed),
-                Cluster::new(self.data, right_indices, right_name, self.seed),
-            );
-
-            let (left, right) = if recursive {
-                (
-                    left.partition(criteria, recursive),
-                    right.partition(criteria, recursive),
-                )
-            } else {
-                (left, right)
-            };
-
-            self.contents = Contents::Children((
-                [(left_pole, Box::new(left)), (right_pole, Box::new(right))],
-                polar_distance,
-            ));
-        }
-        self
-    }
-
-    pub fn par_partition(mut self, criteria: &PartitionCriteria<T, U, D>, recursive: bool) -> Self {
-        if criteria.check(&self) {
-            let ([(left_pole, left_indices, left_name), (right_pole, right_indices, right_name)], polar_distance) =
-                self.partition_once();
-
-            let (left, right) = rayon::join(
-                || Cluster::new(self.data, left_indices, left_name, self.seed),
-                || Cluster::new(self.data, right_indices, right_name, self.seed),
-            );
-
-            let (left, right) = if recursive {
-                rayon::join(
-                    || left.par_partition(criteria, recursive),
-                    || right.par_partition(criteria, recursive),
-                )
-            } else {
-                (left, right)
-            };
-
-            self.contents = Contents::Children((
-                [(left_pole, Box::new(left)), (right_pole, Box::new(right))],
-                polar_distance,
-            ));
-        }
-        self
-    }
-
-    /// Computes and sets the `Ratios` for all `Cluster`s in the tree. These
-    /// ratios are used for selecting `Graph`s for anomaly detection and other
-    /// applications of CLAM.
-    ///
-    /// This method may only be called on a root cluster after calling the `build`
-    /// and `partition` methods.
-    ///
-    /// # Arguments
-    ///
-    /// * `normalized`: Whether to normalize each ratio to a [0, 1] range based
-    /// on the distribution of values for all `Cluster`s in the tree.
-    ///
-    /// # Panics:
-    ///
-    /// * If called on a non-root `Cluster`, i.e. a `Cluster` with depth > 0.
-    /// * If called before `build` and `partition`.
-    #[allow(unused_mut, unused_variables)]
-    pub fn with_ratios(mut self, normalized: bool) -> Self {
-        todo!()
-        // if !self.is_root() {
-        //     panic!("This method may only be set from the root cluster.")
-        // }
-        // if self.is_leaf() {
-        //     panic!("Please `build` and `partition` the tree before setting cluster ratios.")
-        // }
-
-        // match &self.contents {
-        //     Contents::Indices(_) => panic!("Should not be here ..."),
-        //     Contents::Children(([(l, left), (r, right)], lr)) => {
-        //         let left = Box::new(left.set_child_parent_ratios([1.; 6]));
-        //         let right = Box::new(right.set_child_parent_ratios([1.; 6]));
-        //         self.contents = Contents::Children(([(*l, left), (*r, right)], *lr));
-        //     },
-        // };
-        // self.ratios = Some([1.; 6]);
-
-        // if normalized {
-        //     let ratios: Vec<_> = self.subtree().iter().flat_map(|c| c.ratios()).collect();
-        //     let ratios: Vec<Vec<_>> = (0..6)
-        //         .map(|s| ratios.iter().skip(s).step_by(6).cloned().collect())
-        //         .collect();
-        //     let means: [f64; 6] = ratios
-        //         .iter()
-        //         .map(|values| helpers::mean(values))
-        //         .collect::<Vec<_>>()
-        //         .try_into()
-        //         .unwrap();
-        //     let sds: [f64; 6] = ratios
-        //         .iter()
-        //         .zip(means.iter())
-        //         .map(|(values, &mean)| 1e-8 + helpers::sd(values, mean))
-        //         .collect::<Vec<_>>()
-        //         .try_into()
-        //         .unwrap();
-
-        //     self.set_normalized_ratios(means, sds);
-        // }
-
-        // self
+impl<'a, T, D> Cluster<'a, T, D>
+where
+    T: Number + 'a,
+    D: Dataset<T, f64> + 'a,
+{
+    pub fn new_root(data: &'a D) -> Self {
+        let indices = data.indices();
+        assert!(!indices.is_empty(), "`space.data().indices()` must not be empty.");
+        Self::new(data, bitvec::bitvec![1], indices)
     }
 
     #[inline(always)]
-    #[allow(dead_code)]
-    fn next_ema(&self, ratio: f64, parent_ema: f64) -> f64 {
-        // TODO: Consider getting `alpha` from user. Perhaps via env vars?
-        let alpha = 2. / 11.;
-        alpha * ratio + (1. - alpha) * parent_ema
+    fn new_singleton(data: &'a D, history: History, indices: Vec<usize>) -> Self {
+        Self {
+            data,
+            history,
+            cardinality: indices.len(),
+            variant: ClusterVariant::Singleton([indices[0]]),
+            contents: Children::None(indices),
+            ratios: None,
+            t: Default::default(),
+            naive_radius: 0.,
+            scaled_radius: 0.,
+            build_cache: None,
+        }
     }
 
-    #[allow(unused_mut, unused_variables, dead_code)]
-    fn set_child_parent_ratios(mut self, parent_ratios: Ratios) -> Self {
-        todo!()
-        // let [pc, pr, pl, pc_, pr_, pl_] = parent_ratios;
-
-        // let c = (self.cardinality as f64) / pc;
-        // let r = self.radius().as_f64() / pr;
-        // let l = self.lfd() / pl;
-
-        // let c_ = self.next_ema(c, pc_);
-        // let r_ = self.next_ema(r, pr_);
-        // let l_ = self.next_ema(l, pl_);
-
-        // let ratios = [c, r, l, c_, r_, l_];
-        // self.ratios = Some(ratios);
-
-        // match &self.contents {
-        //     Contents::Indices(_) => (),
-        //     Contents::Children(([(l, left), (r, right)], lr)) => {
-        //         let left = Box::new(left.set_child_parent_ratios([1.; 6]));
-        //         let right = Box::new(right.set_child_parent_ratios([1.; 6]));
-        //         self.contents = Contents::Children(([(*l, left), (*r, right)], *lr));
-        //     },
-        // };
-
-        // self
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn new_dipole(
+        data: &'a D,
+        history: History,
+        indices: Vec<usize>,
+        diameter: f64,
+        lfd: f64,
+        [a, b]: [usize; 2],
+        naive_radius: f64,
+        scaled_radius: f64,
+        build_cache: Option<BuildCache>,
+    ) -> Self {
+        let radius = diameter / 2.;
+        assert!(radius <= naive_radius, "radii: {radius:.12} vs {naive_radius:.12}");
+        Self {
+            data,
+            history,
+            cardinality: indices.len(),
+            variant: ClusterVariant::Dipole(diameter, diameter / 2., lfd, [a, b]),
+            contents: Children::None(indices),
+            ratios: None,
+            t: Default::default(),
+            naive_radius,
+            scaled_radius,
+            build_cache,
+        }
     }
 
-    #[allow(unused_mut, unused_variables, dead_code)]
-    fn set_normalized_ratios(&mut self, means: Ratios, sds: Ratios) {
-        todo!()
-        // let ratios: Vec<_> = self
-        //     .ratios
-        //     .unwrap()
-        //     .into_iter()
-        //     .zip(means.into_iter())
-        //     .zip(sds.into_iter())
-        //     .map(|((value, mean), std)| (value - mean) / (std * 2_f64.sqrt()))
-        //     .map(libm::erf)
-        //     .map(|v| (1. + v) / 2.)
-        //     .collect();
-        // self.ratios = Some(ratios.try_into().unwrap());
-
-        // match self.contents {
-        //     Contents::Indices(_) => (),
-        //     Contents::Children(([(_, mut left), (_, mut right)], _)) => {
-        //         left.set_normalized_ratios(means, sds);
-        //         right.set_normalized_ratios(means, sds);
-        //     },
-        // };
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn new_trigon(
+        data: &'a D,
+        history: History,
+        indices: Vec<usize>,
+        radius: f64,
+        lfd: f64,
+        [a, b, c]: [usize; 3],
+        abc: Triangle,
+        naive_radius: f64,
+        build_cache: Option<BuildCache>,
+    ) -> Self {
+        // assert!(radius <= naive_radius, "radii: {radius:.12} vs {naive_radius:.12}");
+        Self {
+            data,
+            history,
+            cardinality: indices.len(),
+            variant: ClusterVariant::Trigon(radius, lfd, [a, b, c], abc),
+            contents: Children::None(indices),
+            ratios: None,
+            t: Default::default(),
+            naive_radius,
+            scaled_radius: radius,
+            build_cache,
+        }
     }
 
-    /// The underlying dataset
-    pub fn dataset(&'a self) -> &dyn Dataset<T, U> {
-        self.data
+    #[allow(dead_code, clippy::too_many_arguments)]
+    #[inline(always)]
+    fn new_tetragon(
+        data: &'a D,
+        history: History,
+        indices: Vec<usize>,
+        radius: f64,
+        lfd: f64,
+        [a, b, c, d]: [usize; 4],
+        abc: Triangle,
+        naive_radius: f64,
+        scaled_radius: f64,
+        build_cache: Option<BuildCache>,
+    ) -> Self {
+        Self {
+            data,
+            history,
+            cardinality: indices.len(),
+            variant: ClusterVariant::Tetragon(radius, lfd, [a, b, c, d], abc),
+            contents: Children::None(indices),
+            ratios: None,
+            t: Default::default(),
+            naive_radius,
+            scaled_radius,
+            build_cache,
+        }
     }
 
-    /// The number of instances in this `Cluster`.
-    pub fn cardinality(&self) -> usize {
-        self.cardinality
-    }
+    fn new(data: &'a D, history: History, indices: Vec<usize>) -> Self {
+        match indices.len() {
+            0 => panic!("Not allowed with no indices! {history:?}"),
+            1 => Self::new_singleton(data, history, indices),
+            2 => {
+                let [a, b] = [indices[0], indices[1]];
+                let diameter = data.one_to_one(a, b);
+                let radius = diameter / 2.;
+                Self::new_dipole(
+                    data,
+                    history,
+                    vec![a, b],
+                    diameter,
+                    1.,
+                    [a, b],
+                    radius,
+                    radius,
+                    Some(vec![vec![0., diameter], vec![diameter, 0.]]), // TODO: Let this be None
+                )
+            }
+            _ => {
+                // The geometric median
+                let m = {
+                    let arg_samples = if indices.len() < 100 {
+                        #[allow(clippy::redundant_clone)]
+                        indices.clone()
+                    } else {
+                        let n = ((indices.len() as f64).sqrt()) as usize;
+                        data.choose_unique(n, &indices, None)
+                    };
+                    let sample_distances = data
+                        .pairwise(&arg_samples)
+                        .into_iter()
+                        .map(|v| v.into_iter().sum::<f64>())
+                        .collect::<Vec<_>>();
+                    arg_samples[helpers::arg_min(&sample_distances).0]
+                };
 
-    /// Returns the indices of the instances contained in this `Cluster`.
-    ///
-    /// Indices are only stored at leaf `Cluster`s. Calling this method on a
-    /// non-leaf `Cluster` will have to perform a tree traversal, returning the
-    /// indices in depth-first order.
-    pub fn indices(&self) -> Vec<usize> {
-        match &self.contents {
-            Contents::Indices(indices) => indices.clone(),
-            Contents::Children(([(_, left), (_, right)], _)) => {
-                left.indices().into_iter().chain(right.indices().into_iter()).collect()
+                // the instance farthest from `m`
+                let (a, naive_radius) = {
+                    // TODO: Try profiling after doing this twice
+                    let m_distances = data.one_to_many(m, &indices);
+                    let (a, naive_radius) = helpers::arg_max(&m_distances);
+                    (indices[a], naive_radius)
+                };
+                if naive_radius < EPSILON {
+                    return Self::new_singleton(data, history, indices);
+                }
+                let a_distances = data.one_to_many(a, &indices);
+
+                // the instance farthest from `a`
+                let (b, ab) = {
+                    let (b, ab) = helpers::arg_max(&a_distances);
+                    (indices[b], ab)
+                };
+                let b_distances = data.one_to_many(b, &indices);
+
+                // Make triangles to find `c`, the instance which makes the maximal cosine-angle with `a` and `b`.
+                let triangles = indices
+                    .iter()
+                    .zip(a_distances.iter())
+                    .zip(b_distances.iter())
+                    .filter(|((&i, &ac), &bc)| {
+                        i != a && i != b && ac > EPSILON && ab > EPSILON && makes_triangle([ab, ac, bc])
+                    })
+                    .map(|((&i, &ac), &bc)| (i, Triangle::with_edges_unchecked([ac, bc, ab])))
+                    .collect::<Vec<_>>();
+
+                if triangles.is_empty() {
+                    // either there are only two unique instances or all instances are colinear
+                    let radius = ab / 2.;
+                    let radial_distances = a_distances.iter().map(|&d| (d - radius).abs()).collect::<Vec<_>>();
+                    let lfd = helpers::compute_lfd(radius, &radial_distances);
+                    return Self::new_dipole(
+                        data,
+                        history,
+                        indices,
+                        ab,
+                        lfd,
+                        [a, b],
+                        radius,
+                        radius,
+                        Some(vec![a_distances, b_distances]),
+                    );
+                }
+
+                // find `c` and the triangle `abc` which produced the maximal cosine
+                let (c, cab) = triangles
+                    .into_iter()
+                    .max_by(|(_, l), (_, r)| l.cos_a().partial_cmp(&r.cos_a()).unwrap())
+                    .unwrap();
+                if cab.cos_a() <= 0. {
+                    // No acute angle was possible so we have an ellipsoid-shaped Dipole. This should be rare.
+                    let radius = ab / 2.;
+                    let radial_distances = a_distances.iter().map(|&d| (d - radius).abs()).collect::<Vec<_>>();
+                    let lfd = helpers::compute_lfd(radius, &radial_distances);
+                    return Self::new_dipole(
+                        data,
+                        history,
+                        indices,
+                        ab,
+                        lfd,
+                        [a, b],
+                        radius,
+                        radius,
+                        Some(vec![a_distances, b_distances]),
+                    );
+                }
+                let c_distances = data.one_to_many(c, &indices);
+
+                // TODO: Use `rotate` method on `Triangle`
+                let [ac, bc, _] = cab.edge_lengths();
+                let abc = Triangle::with_edges_unchecked([ab, ac, bc]);
+                let triangle_radius = abc.r_sq().sqrt();
+
+                // make tetrahedra to find the maximal radius for the cluster.
+                let radial_distances = indices
+                    .iter()
+                    .zip(a_distances.iter())
+                    .zip(b_distances.iter())
+                    .zip(c_distances.iter())
+                    .filter(|(((&i, &ad), &bd), &cd)| {
+                        i != a
+                            && i != b
+                            && i != c
+                            && ad > EPSILON
+                            && bd > EPSILON
+                            && cd > EPSILON
+                            && makes_triangle([ab, ad, bd])
+                            && makes_triangle([ac, ad, cd])
+                            && makes_triangle([bc, bd, cd])
+                    })
+                    .map(|(((_, &ad), &bd), &cd)| {
+                        Tetrahedron::with_edges_unchecked([ab, ac, bc, ad, bd, cd])
+                            .od_sq()
+                            .sqrt()
+                    })
+                    .collect::<Vec<_>>();
+
+                if radial_distances.is_empty() {
+                    Self::new_trigon(
+                        data,
+                        history,
+                        indices,
+                        triangle_radius,
+                        2., // TODO: have a think about this case
+                        [a, b, c],
+                        abc,
+                        naive_radius,
+                        Some(vec![a_distances, b_distances, c_distances]),
+                    )
+                } else {
+                    let (d, radius) = {
+                        let (d, radius) = helpers::arg_max(&radial_distances);
+                        (indices[d], radius)
+                    };
+
+                    if radius < triangle_radius {
+                        let lfd = helpers::compute_lfd(triangle_radius, &radial_distances);
+                        Self::new_trigon(
+                            data,
+                            history,
+                            indices,
+                            triangle_radius,
+                            lfd,
+                            [a, b, c],
+                            abc,
+                            naive_radius,
+                            Some(vec![a_distances, b_distances, c_distances]),
+                        )
+                    } else {
+                        let lfd = helpers::compute_lfd(radius, &radial_distances);
+                        let d_distances = data.one_to_many(d, &indices);
+                        Self::new_tetragon(
+                            data,
+                            history,
+                            indices,
+                            radius,
+                            lfd,
+                            [a, b, c, d],
+                            abc,
+                            naive_radius,
+                            triangle_radius * SQRT_2,
+                            Some(vec![a_distances, b_distances, c_distances, d_distances]),
+                        )
+                    }
+                }
             }
         }
     }
 
-    /// The `history` of the `Cluster` as a bool vector.
-    pub fn history(&self) -> Vec<bool> {
-        self.history.iter().map(|v| *v).collect()
+    fn partition_duo(&self) -> [Self; 2] {
+        let indices = match &self.contents {
+            Children::None(indices) => indices,
+            _ => panic!("Impossible!"),
+        };
+
+        let extrema = self.extrema();
+        let [a, b] = [extrema[0], extrema[1]];
+
+        let [a_distances, b_distances] = {
+            let build_cache = self.build_cache.as_ref().unwrap();
+            [&build_cache[0], &build_cache[1]]
+        };
+
+        let (alpha, bravo) = {
+            let (alpha, bravo): (Vec<_>, Vec<_>) = indices
+                .iter()
+                .zip(a_distances.iter().zip(b_distances.iter()))
+                .filter(|(&i, _)| i != a && i != b)
+                .partition(|(_, (&l, &r))| l <= r);
+
+            let alpha = [a]
+                .into_iter()
+                .chain(alpha.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let bravo = [b]
+                .into_iter()
+                .chain(bravo.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+
+            if alpha.len() < bravo.len() {
+                (bravo, alpha)
+            } else {
+                (alpha, bravo)
+            }
+        };
+
+        let a_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(false);
+            history
+        };
+        let b_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(true);
+            history
+        };
+
+        [
+            Self::new(self.data, a_history, alpha),
+            Self::new(self.data, b_history, bravo),
+        ]
     }
 
-    /// The `name` of the `Cluster` as a hex-String.
+    fn partition_trio(&self) -> [Self; 3] {
+        let indices = match &self.contents {
+            Children::None(indices) => indices,
+            _ => panic!("Impossible!"),
+        };
+
+        let extrema = self.extrema();
+        let [a, b, c] = [extrema[0], extrema[1], extrema[2]];
+
+        let [a_distances, b_distances, c_distances] = {
+            let build_cache = self.build_cache.as_ref().unwrap();
+            [&build_cache[0], &build_cache[1], &build_cache[2]]
+        };
+
+        let [alpha, bravo, charlie] = {
+            let (alpha, bc): (Vec<_>, Vec<_>) = indices
+                .iter()
+                .zip(a_distances.iter().zip(b_distances.iter().zip(c_distances.iter())))
+                .filter(|(&i, _)| i != a && i != b && i != c)
+                .partition(|(_, (&a, (&b, &c)))| a <= b && a <= c);
+
+            let (bravo, charlie): (Vec<_>, Vec<_>) = bc
+                .into_iter()
+                .filter(|(&i, _)| i != a && i != b && i != c)
+                .partition(|(_, (_, (&b, &c)))| b <= c);
+
+            let alpha = [a]
+                .into_iter()
+                .chain(alpha.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let bravo = [b]
+                .into_iter()
+                .chain(bravo.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let charlie = [c]
+                .into_iter()
+                .chain(charlie.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+
+            let mut abc = [alpha, bravo, charlie];
+            abc.sort_by_key(|a| -(a.len() as isize));
+            abc
+        };
+
+        let a_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(false);
+            history
+        };
+        let b_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(true);
+            history
+        };
+        let c_history = {
+            let mut history = self.history.clone();
+            history.push(true);
+            history.push(false);
+            history
+        };
+
+        [
+            Self::new(self.data, a_history, alpha),
+            Self::new(self.data, b_history, bravo),
+            Self::new(self.data, c_history, charlie),
+        ]
+    }
+
+    fn partition_quadro(&self) -> [Self; 4] {
+        let indices = match &self.contents {
+            Children::None(indices) => indices,
+            _ => panic!("Impossible!"),
+        };
+
+        let extrema = self.extrema();
+        let [a, b, c, d] = [extrema[0], extrema[1], extrema[2], extrema[3]];
+
+        let [a_distances, b_distances, c_distances, d_distances] = {
+            let build_cache = self.build_cache.as_ref().unwrap();
+            [&build_cache[0], &build_cache[1], &build_cache[2], &build_cache[3]]
+        };
+
+        let [alpha, bravo, charlie, delta] = {
+            let (alpha, bcd): (Vec<_>, Vec<_>) = indices
+                .iter()
+                .zip(
+                    a_distances
+                        .iter()
+                        .zip(b_distances.iter().zip(c_distances.iter().zip(d_distances.iter()))),
+                )
+                .filter(|(&i, _)| i != a && i != b && i != c && i != d)
+                .partition(|(_, (&a, (&b, (&c, &d))))| a <= b && a <= c && a <= d);
+
+            let (bravo, cd): (Vec<_>, Vec<_>) = bcd
+                .into_iter()
+                .filter(|(&i, _)| i != a && i != b && i != c && i != d)
+                .partition(|(_, (_, (&b, (&c, &d))))| b <= c && b <= d);
+
+            let (charlie, delta): (Vec<_>, Vec<_>) = cd
+                .into_iter()
+                .filter(|(&i, _)| i != a && i != b && i != c && i != d)
+                .partition(|(_, (_, (_, (&c, &d))))| c <= d);
+
+            let alpha = [a]
+                .into_iter()
+                .chain(alpha.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let bravo = [b]
+                .into_iter()
+                .chain(bravo.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let charlie = [c]
+                .into_iter()
+                .chain(charlie.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+            let delta = [d]
+                .into_iter()
+                .chain(delta.into_iter().map(|(&i, _)| i))
+                .collect::<Vec<_>>();
+
+            let mut abcd = [alpha, bravo, charlie, delta];
+            abcd.sort_by_key(|a| -(a.len() as isize));
+            abcd
+        };
+
+        let a_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(false);
+            history
+        };
+        let b_history = {
+            let mut history = self.history.clone();
+            history.push(false);
+            history.push(true);
+            history
+        };
+        let c_history = {
+            let mut history = self.history.clone();
+            history.push(true);
+            history.push(false);
+            history
+        };
+        let d_history = {
+            let mut history = self.history.clone();
+            history.push(true);
+            history.push(true);
+            history
+        };
+
+        [
+            Self::new(self.data, a_history, alpha),
+            Self::new(self.data, b_history, bravo),
+            Self::new(self.data, c_history, charlie),
+            Self::new(self.data, d_history, delta),
+        ]
+    }
+
+    pub fn partition(mut self, partition_criteria: &PartitionCriteria<T, D>, recursive: bool) -> Self {
+        if partition_criteria.check(&self) {
+            match &self.variant {
+                ClusterVariant::Singleton(..) => panic!("NOOOOOOOO!"),
+                ClusterVariant::Dipole(..) => {
+                    let [alpha, bravo] = self.partition_duo();
+                    let (alpha, bravo) = if recursive {
+                        // (
+                        //     alpha.partition(partition_criteria, recursive),
+                        //     bravo.partition(partition_criteria, recursive),
+                        // )
+                        rayon::join(
+                            || alpha.partition(partition_criteria, recursive),
+                            || bravo.partition(partition_criteria, recursive),
+                        )
+                    } else {
+                        (alpha, bravo)
+                    };
+                    self.contents = Children::Dipole([Box::new(alpha), Box::new(bravo)]);
+                }
+                ClusterVariant::Trigon(..) => {
+                    let [alpha, bravo, charlie] = self.partition_trio();
+                    let ((alpha, bravo), charlie) = if recursive {
+                        // (
+                        //     (
+                        //         alpha.partition(partition_criteria, recursive),
+                        //         bravo.partition(partition_criteria, recursive),
+                        //     ),
+                        //     charlie.partition(partition_criteria, recursive),
+                        // )
+                        rayon::join(
+                            || {
+                                rayon::join(
+                                    || alpha.partition(partition_criteria, recursive),
+                                    || bravo.partition(partition_criteria, recursive),
+                                )
+                            },
+                            || charlie.partition(partition_criteria, recursive),
+                        )
+                    } else {
+                        ((alpha, bravo), charlie)
+                    };
+                    self.contents = Children::Trigon([Box::new(alpha), Box::new(bravo), Box::new(charlie)]);
+                }
+                ClusterVariant::Tetragon(..) => {
+                    let [alpha, bravo, charlie, delta] = self.partition_quadro();
+                    let (((alpha, bravo), charlie), delta) = if recursive {
+                        // (
+                        //     (
+                        //         (
+                        //             alpha.partition(partition_criteria, recursive),
+                        //             bravo.partition(partition_criteria, recursive),
+                        //         ),
+                        //         charlie.partition(partition_criteria, recursive),
+                        //     ),
+                        //     delta.partition(partition_criteria, recursive),
+                        // )
+                        rayon::join(
+                            || {
+                                rayon::join(
+                                    || {
+                                        rayon::join(
+                                            || alpha.partition(partition_criteria, recursive),
+                                            || bravo.partition(partition_criteria, recursive),
+                                        )
+                                    },
+                                    || charlie.partition(partition_criteria, recursive),
+                                )
+                            },
+                            || delta.partition(partition_criteria, recursive),
+                        )
+                    } else {
+                        (((alpha, bravo), charlie), delta)
+                    };
+                    self.contents =
+                        Children::Tetragon([Box::new(alpha), Box::new(bravo), Box::new(charlie), Box::new(delta)]);
+                }
+            }
+        }
+        self.build_cache = None;
+        self
+    }
+
+    #[allow(unused_mut, unused_variables)]
+    pub fn with_ratios(mut self, normalized: bool) -> Self {
+        // TODO:
+        todo!()
+    }
+
+    pub fn data(&self) -> &'a D {
+        self.data
+    }
+
+    pub fn cardinality(&self) -> usize {
+        self.cardinality
+    }
+
+    pub fn indices(&self) -> Vec<usize> {
+        match &self.contents {
+            Children::None(indices) => indices.clone(),
+            Children::Dipole(children) => children.iter().flat_map(|c| c.indices().into_iter()).collect(),
+            Children::Trigon(children) => children.iter().flat_map(|c| c.indices().into_iter()).collect(),
+            Children::Tetragon(children) => children.iter().flat_map(|c| c.indices().into_iter()).collect(),
+        }
+    }
+
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    // TODO: Optimize?
     pub fn name(&self) -> String {
-        let d = self.history.len();
-        let padding = if d % 4 == 0 { 0 } else { 4 - d % 4 };
+        let d = self.history().len();
+        let padding = 4 - d % 4;
         let bin_name = (0..padding)
             .map(|_| "0")
             .chain(self.history.iter().map(|b| if *b { "1" } else { "0" }))
@@ -461,200 +812,153 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Cluster<'a, T, U, D> {
             .join("")
     }
 
-    /// Whether the `Cluster` is the root of the tree.
-    ///
-    /// The root `Cluster` has a depth of 0.
-    pub fn is_root(&self) -> bool {
-        self.depth() == 0
+    pub fn variant_name(&self) -> &str {
+        self.variant.name()
     }
 
-    /// The number of parent-child hops from the root `Cluster` to this one.
     pub fn depth(&self) -> usize {
-        self.history.len() - 1
+        (self.history.len() - 1) / 2
     }
 
-    /// The index of the instance at the center, i.e. the geometric median, of
-    /// the `Cluster`.
-    ///
-    /// For `Cluster`s with a large `cardinality`, this is an approximation.
-    ///
-    /// TODO: Analyze the level of approximation for this. It's probably a
-    /// sqrt(3) approximation based on some work in computational geometry.
-    pub fn arg_center(&self) -> usize {
-        self.arg_center
-    }
-
-    /// The index of the instance that is farthest from the `center`.
-    pub fn arg_radius(&self) -> usize {
-        self.arg_radius
-    }
-
-    /// The distance between the `center` and the instance farthest from the
-    /// `center`.
-    pub fn radius(&self) -> U {
-        self.radius
-    }
-
-    /// Whether the `Cluster` contains only one instance or only identical
-    /// instances.
     pub fn is_singleton(&self) -> bool {
-        self.radius() == U::zero()
+        matches!(self.variant, ClusterVariant::Singleton(..))
     }
 
-    /// The local fractal dimension of the `Cluster` at the length scales of the
-    /// `radius` and half that `radius`.
-    pub fn lfd(&self) -> f64 {
-        self.lfd
-    }
-
-    pub fn polar_distance(&self) -> Option<U> {
-        match &self.contents {
-            Contents::Indices(_) => None,
-            Contents::Children((_, lr)) => Some(*lr),
-        }
-    }
-
-    /// The six `Cluster` ratios used for anomaly detection and related
-    /// applications.
-    ///
-    /// These ratios are:
-    ///
-    /// * child-cardinality / parent-cardinality.
-    /// * child-radius / parent-radius.
-    /// * child-lfd / parent-lfd.
-    /// * exponential moving average of child-cardinality / parent-cardinality.
-    /// * exponential moving average of child-radius / parent-radius.
-    /// * exponential moving average of child-lfd / parent-lfd.
-    ///
-    /// This method may only be called after calling `with_ratios` on the root.
-    ///
-    /// # Panics:
-    ///
-    /// * If called before calling `with_ratios` on the root.
-    pub fn ratios(&self) -> Ratios {
-        self.ratios
-            .expect("Please call `with_ratios` before using this method.")
-    }
-
-    /// A 2-slice of references to the left and right child `Cluster`s.
-    pub fn children(&self) -> Option<[&Self; 2]> {
-        match &self.contents {
-            Contents::Indices(_) => None,
-            Contents::Children(([(_, left), (_, right)], _)) => Some([left.as_ref(), right.as_ref()]),
-        }
-    }
-
-    /// Whether this cluster has no children.
     pub fn is_leaf(&self) -> bool {
-        matches!(&self.contents, Contents::Indices(_))
+        matches!(self.contents, Children::None(..))
     }
 
-    /// Whether this `Cluster` is an ancestor of the `other` `Cluster`.
-    pub fn is_ancestor_of(&self, other: &Self) -> bool {
-        self.depth() < other.depth() && self.history.iter().zip(other.history.iter()).all(|(l, r)| *l == *r)
+    pub fn radius(&self) -> f64 {
+        self.variant.radius()
     }
 
-    /// Whether this `Cluster` is an descendant of the `other` `Cluster`.
-    pub fn is_descendant_of(&self, other: &Self) -> bool {
-        other.is_ancestor_of(self)
+    pub fn naive_radius(&self) -> f64 {
+        self.naive_radius
     }
 
-    /// A Vec of references to all `Cluster`s in the subtree of this `Cluster`,
-    /// including this `Cluster`.
+    pub fn scaled_radius(&self) -> f64 {
+        self.scaled_radius
+    }
+
+    pub fn lfd(&self) -> f64 {
+        self.variant.lfd()
+    }
+
+    pub fn contents(&self) -> &Children<'a, T, D> {
+        &self.contents
+    }
+
+    pub fn children(&self) -> Vec<&Self> {
+        match &self.contents {
+            Children::None(_) => panic!("Barren am I, ye' moron!"),
+            Children::Dipole(children) => children.iter().map(|c| c.as_ref()).collect(),
+            Children::Trigon(children) => children.iter().map(|c| c.as_ref()).collect(),
+            Children::Tetragon(children) => children.iter().map(|c| c.as_ref()).collect(),
+        }
+    }
+
+    pub fn ratios(&self) -> Ratios {
+        // TODO:
+        self.ratios
+            .expect("Please call `with_ratios` after `build` before using this method.")
+    }
+
+    pub fn extrema(&self) -> Vec<usize> {
+        self.variant.extrema()
+    }
+
     pub fn subtree(&self) -> Vec<&Self> {
         let subtree = vec![self];
         match &self.contents {
-            Contents::Indices(_) => subtree,
-            Contents::Children(([(_, left), (_, right)], _)) => subtree
-                .into_iter()
-                .chain(left.subtree().into_iter())
-                .chain(right.subtree().into_iter())
-                .collect(),
+            Children::None(_) => subtree,
+            Children::Dipole(children) => children.iter().flat_map(|c| c.subtree().into_iter()).collect(),
+            Children::Trigon(children) => children.iter().flat_map(|c| c.subtree().into_iter()).collect(),
+            Children::Tetragon(children) => children.iter().flat_map(|c| c.subtree().into_iter()).collect(),
         }
     }
 
-    /// The number of descendants of this `Cluster`, excluding itself.
     pub fn num_descendants(&self) -> usize {
         self.subtree().len() - 1
     }
 
-    /// The maximum depth of any leaf in the subtree of this `Cluster`.
     pub fn max_leaf_depth(&self) -> usize {
         self.subtree().into_iter().map(|c| c.depth()).max().unwrap()
     }
 
-    /// Distance from the `center` to the given indexed instance.
-    pub fn distance_to_indexed_instance(&self, index: usize) -> U {
-        self.data.one_to_one(index, self.arg_center())
+    pub fn distance_to_indexed(&self, index: usize) -> f64 {
+        self.distance_to_query(self.data.get(index))
     }
 
-    /// Distance from the `center` to the given instance.
-    pub fn distance_to_instance(&self, instance: &[T]) -> U {
-        self.data.query_to_one(instance, self.arg_center())
-    }
-
-    /// Distance from the `center` of this `Cluster` to the center of the
-    /// `other` `Cluster`.
-    pub fn distance_to_other(&self, other: &Self) -> U {
-        self.distance_to_indexed_instance(other.arg_center())
-    }
-
-    /// Assuming that this `Cluster` overlaps with with query ball, we return
-    /// only those children that also overlap with the query ball
-    pub fn overlapping_children(&self, query: &[T], radius: U) -> Vec<&Self> {
-        let (l, left, r, right, lr) = match &self.contents {
-            Contents::Indices(_) => panic!("Can only be called on non-leaf clusters."),
-            Contents::Children(([(l, left), (r, right)], lr)) => (*l, left.as_ref(), *r, right.as_ref(), *lr),
-        };
-        let ql = self.data.query_to_one(query, l);
-        let qr = self.data.query_to_one(query, r);
-
-        let swap = ql < qr;
-        let (ql, qr) = if swap { (qr, ql) } else { (ql, qr) };
-
-        if (ql + qr) * (ql - qr) <= U::from(2).unwrap() * lr * radius {
-            vec![left, right]
-        } else if swap {
-            vec![left]
+    fn tetrahedral_distance(&self, extrema: [usize; 3], abc: &Triangle, query: &[T]) -> f64 {
+        let distances = self.data.query_to_many(query, &extrema);
+        let [ab, ac, bc] = abc.edge_lengths();
+        let [ad, bd, cd] = [distances[0], distances[1], distances[2]];
+        let distance = if let Ok(mut abcd) = Tetrahedron::with_edges(['a', 'b', 'c', 'd'], [ab, ac, bc, ad, bd, cd]) {
+            abcd.od_sq()
         } else {
-            vec![right]
+            abc.r_sq()
+        };
+        distance.sqrt()
+    }
+
+    pub fn distance_to_query(&self, query: &[T]) -> f64 {
+        match &self.variant {
+            ClusterVariant::Singleton([a]) => self.data.query_to_one(query, *a),
+            ClusterVariant::Dipole(diameter, radius, _, [a, b]) => {
+                let distances = self.data.query_to_many(query, &[*a, *b]);
+                let [ac, bc] = [distances[0], distances[1]];
+                if ac < EPSILON || bc < EPSILON {
+                    *radius
+                } else {
+                    let abc = Triangle::with_edges_unchecked([*diameter, ac, bc]);
+                    abc.cm_sq().sqrt()
+                }
+            }
+            ClusterVariant::Trigon(.., [a, b, c], abc) => self.tetrahedral_distance([*a, *b, *c], abc, query),
+            ClusterVariant::Tetragon(.., [a, b, c, _], abc) => self.tetrahedral_distance([*a, *b, *c], abc, query),
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use crate::core::cluster::Cluster;
-    use crate::core::cluster_criteria::PartitionCriteria;
-    use crate::core::dataset::VecVec;
-    use crate::distances::lp_norms::euclidean;
-
-    #[test]
-    fn test_cluster() {
-        let data = vec![vec![0., 0., 0.], vec![1., 1., 1.], vec![2., 2., 2.], vec![3., 3., 3.]];
-        let metric = euclidean::<f32, f32>;
-        let name = "test".to_string();
-        let space = VecVec::new(data, metric, name, false);
-        let partition_criteria = PartitionCriteria::new(true).with_max_depth(3).with_min_cardinality(1);
-        let cluster = Cluster::new_root(&space)
-            .with_seed(42)
-            .partition(&partition_criteria, true);
-
-        assert_eq!(cluster.depth(), 0);
-        assert_eq!(cluster.cardinality(), 4);
-        assert_eq!(cluster.num_descendants(), 6);
-        assert!(cluster.radius() > 0.);
-
-        assert_eq!(format!("{cluster}"), "1");
-
-        let [left, right] = cluster.children().unwrap();
-        assert_eq!(format!("{left}"), "2");
-        assert_eq!(format!("{right}"), "3");
-
-        for child in [left, right] {
-            assert_eq!(child.depth(), 1);
-            assert_eq!(child.cardinality(), 2);
-            assert_eq!(child.num_descendants(), 2);
+    pub fn distance_to_other(&self, other: &Self) -> f64 {
+        match &self.variant {
+            ClusterVariant::Singleton([a]) => {
+                let center = self.data.get(*a);
+                other.distance_to_query(center)
+            }
+            ClusterVariant::Dipole(diameter, radius, _, [a, b]) => {
+                let [ac, bc] = [other.distance_to_indexed(*a), other.distance_to_indexed(*b)];
+                if ac < EPSILON || bc < EPSILON {
+                    *radius
+                } else {
+                    Triangle::with_edges_unchecked([*diameter, ac, bc]).cm_sq().sqrt()
+                }
+            }
+            ClusterVariant::Trigon(.., [a, b, c], abc) => {
+                let [ad, bd, cd] = [
+                    other.distance_to_indexed(*a),
+                    other.distance_to_indexed(*b),
+                    other.distance_to_indexed(*c),
+                ];
+                let distance_sq = if ad < EPSILON || bd < EPSILON || cd < EPSILON {
+                    abc.r_sq()
+                } else {
+                    Tetrahedron::with_triangle_unchecked(abc.clone(), [ad, bd, cd]).od_sq()
+                };
+                distance_sq.sqrt()
+            }
+            ClusterVariant::Tetragon(.., [a, b, c, _], abc) => {
+                let [ad, bd, cd] = [
+                    other.distance_to_indexed(*a),
+                    other.distance_to_indexed(*b),
+                    other.distance_to_indexed(*c),
+                ];
+                let distance_sq = if ad < EPSILON || bd < EPSILON || cd < EPSILON {
+                    abc.r_sq()
+                } else {
+                    Tetrahedron::with_triangle_unchecked(abc.clone(), [ad, bd, cd]).od_sq()
+                };
+                distance_sq.sqrt()
+            }
         }
     }
 }

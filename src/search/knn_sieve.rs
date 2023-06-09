@@ -3,20 +3,20 @@ use crate::core::dataset::Dataset;
 use crate::core::number::Number;
 
 #[allow(dead_code)]
-pub struct KnnSieve<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    dataset: &'a dyn Dataset<T, U>,
+pub struct KnnSieve<'a, T: Number, D: Dataset<T, f64>> {
+    dataset: &'a D,
     query: &'a [T],
     k: usize,
-    layer: Vec<&'a Cluster<'a, T, U, D>>,
-    leaves: Vec<Grain<'a, T, U, D>>,
+    layer: Vec<&'a Cluster<'a, T, D>>,
+    leaves: Vec<Grain<'a, T, D>>,
     is_refined: bool,
-    hits: priority_queue::DoublePriorityQueue<usize, OrdNumber<U>>,
+    hits: priority_queue::DoublePriorityQueue<usize, OrdNumber<f64>>,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> KnnSieve<'a, T, U, D> {
-    pub fn new(root: &'a Cluster<'a, T, U, D>, query: &'a [T], k: usize) -> Self {
+impl<'a, T: Number, D: Dataset<T, f64>> KnnSieve<'a, T, D> {
+    pub fn new(root: &'a Cluster<'a, T, D>, query: &'a [T], k: usize) -> Self {
         Self {
-            dataset: root.dataset(),
+            dataset: root.data(),
             query,
             k,
             layer: vec![root],
@@ -31,8 +31,11 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> KnnSieve<'a, T, U, D> {
     }
 
     pub fn refine_step(&mut self) {
-        let centers = self.layer.iter().map(|c| c.arg_center()).collect::<Vec<_>>();
-        let distances = self.dataset.query_to_many(self.query, &centers);
+        let distances = self
+            .layer
+            .iter()
+            .map(|c| c.distance_to_query(self.query))
+            .collect::<Vec<_>>();
 
         let mut grains = self
             .layer
@@ -67,21 +70,21 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> KnnSieve<'a, T, U, D> {
         todo!()
     }
 
-    pub fn extract(&self) -> Vec<(usize, U)> {
+    pub fn extract(&self) -> Vec<(usize, f64)> {
         todo!()
     }
 }
 
 #[allow(dead_code)]
-struct Grain<'a, T: Number, U: Number, D: Dataset<T, U>> {
+struct Grain<'a, T: Number, D: Dataset<T, f64>> {
     t: std::marker::PhantomData<T>,
-    c: &'a Cluster<'a, T, U, D>,
-    d: U,
+    c: &'a Cluster<'a, T, D>,
+    d: f64,
     multiplicity: usize,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Grain<'a, T, U, D> {
-    fn new(c: &'a Cluster<'a, T, U, D>, d: U, multiplicity: usize) -> Self {
+impl<'a, T: Number, D: Dataset<T, f64>> Grain<'a, T, D> {
+    fn new(c: &'a Cluster<'a, T, D>, d: f64, multiplicity: usize) -> Self {
         let t = Default::default();
         Self { t, c, d, multiplicity }
     }

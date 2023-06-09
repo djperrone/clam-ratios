@@ -7,49 +7,49 @@ use super::cluster::Cluster;
 use super::dataset::Dataset;
 use super::number::Number;
 
-type ClusterSet<'a, T, U, D> = HashSet<&'a Cluster<'a, T, U, D>>;
-type EdgeSet<'a, T, U, D> = HashSet<&'a Edge<'a, T, U, D>>;
-type AdjacencyMap<'a, T, U, D> = HashMap<&'a Cluster<'a, T, U, D>, ClusterSet<'a, T, U, D>>;
-type FrontierSizes<'a, T, U, D> = HashMap<&'a Cluster<'a, T, U, D>, Vec<usize>>;
+type ClusterSet<'a, T, D> = HashSet<&'a Cluster<'a, T, D>>;
+type EdgeSet<'a, T, D> = HashSet<&'a Edge<'a, T, D>>;
+type AdjacencyMap<'a, T, D> = HashMap<&'a Cluster<'a, T, D>, ClusterSet<'a, T, D>>;
+type FrontierSizes<'a, T, D> = HashMap<&'a Cluster<'a, T, D>, Vec<usize>>;
 
 /// Two `Cluster`s have an `Edge` between them if they have overlapping volumes.
 ///
 /// In CLAM, all `Edge`s are bi-directional.
 #[derive(Debug, Clone)]
-pub struct Edge<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    left: &'a Cluster<'a, T, U, D>,
-    right: &'a Cluster<'a, T, U, D>,
-    distance: U,
+pub struct Edge<'a, T: Number, D: Dataset<T, f64>> {
+    left: &'a Cluster<'a, T, D>,
+    right: &'a Cluster<'a, T, D>,
+    distance: f64,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartialEq for Edge<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> PartialEq for Edge<'a, T, D> {
     fn eq(&self, other: &Self) -> bool {
         (self.left == other.left) && (self.right == other.right)
     }
 }
 
 /// Two `Edge`s are equal if they connect the same two `Cluster`s.
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Eq for Edge<'a, T, U, D> {}
+impl<'a, T: Number, D: Dataset<T, f64>> Eq for Edge<'a, T, D> {}
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> std::fmt::Display for Edge<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> std::fmt::Display for Edge<'a, T, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:} -- {:}", self.left, self.right)
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Hash for Edge<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> Hash for Edge<'a, T, D> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         format!("{self}").hash(state)
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Edge<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> Edge<'a, T, D> {
     /// Creates a new `Edge` from the given `Cluster`s and the distance between
     /// them.
     ///
     /// It is upon the user to verify that the two `Cluster`s are close enough
     /// to have an edge between them.
-    pub fn new(left: &'a Cluster<'a, T, U, D>, right: &'a Cluster<'a, T, U, D>, distance: U) -> Self {
+    pub fn new(left: &'a Cluster<'a, T, D>, right: &'a Cluster<'a, T, D>, distance: f64) -> Self {
         if left < right {
             Self { left, right, distance }
         } else {
@@ -62,27 +62,27 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Edge<'a, T, U, D> {
     }
 
     /// Whether this edge has the given `Cluster` at one of its ends.
-    pub fn contains(&self, c: &Cluster<'a, T, U, D>) -> bool {
+    pub fn contains(&self, c: &Cluster<'a, T, D>) -> bool {
         c == self.left || c == self.right
     }
 
     /// A 2-slice of the `Cluster`s in this `Edge`.
-    pub fn clusters(&self) -> [&Cluster<'a, T, U, D>; 2] {
+    pub fn clusters(&self) -> [&Cluster<'a, T, D>; 2] {
         [self.left, self.right]
     }
 
     /// A reference to the `Cluster` at the `left` end of the `Edge`.
-    pub fn left(&self) -> &Cluster<'a, T, U, D> {
+    pub fn left(&self) -> &Cluster<'a, T, D> {
         self.left
     }
 
     /// A reference to the `Cluster` at the `right` end of the `Edge`.
-    pub fn right(&self) -> &Cluster<'a, T, U, D> {
+    pub fn right(&self) -> &Cluster<'a, T, D> {
         self.right
     }
 
     /// The distance between the two `Cluster`s connected by this `Edge`.
-    pub fn distance(&self) -> U {
+    pub fn distance(&self) -> f64 {
         self.distance
     }
 
@@ -96,7 +96,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Edge<'a, T, U, D> {
     /// Err:
     ///
     /// * If `c` is not one of the `Cluster`s connected by this `Edge`.
-    pub fn neighbor(&self, c: &Cluster<'a, T, U, D>) -> Result<&Cluster<'a, T, U, D>, String> {
+    pub fn neighbor(&self, c: &Cluster<'a, T, D>) -> Result<&Cluster<'a, T, D>, String> {
         if c == self.left {
             Ok(self.right)
         } else if c == self.right {
@@ -112,20 +112,20 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Edge<'a, T, U, D> {
 ///
 /// TODO: Add more info on what graphs we useful for.
 #[derive(Debug, Clone)]
-pub struct Graph<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    clusters: ClusterSet<'a, T, U, D>,
-    edges: EdgeSet<'a, T, U, D>,
-    adjacency_map: AdjacencyMap<'a, T, U, D>,
+pub struct Graph<'a, T: Number, D: Dataset<T, f64>> {
+    clusters: ClusterSet<'a, T, D>,
+    edges: EdgeSet<'a, T, D>,
+    adjacency_map: AdjacencyMap<'a, T, D>,
     population: usize,
     min_depth: usize,
     max_depth: usize,
-    ordered_clusters: Vec<&'a Cluster<'a, T, U, D>>,
-    distance_matrix: Option<Vec<Vec<U>>>,
+    ordered_clusters: Vec<&'a Cluster<'a, T, D>>,
+    distance_matrix: Option<Vec<Vec<f64>>>,
     adjacency_matrix: Option<Vec<Vec<bool>>>,
-    frontier_sizes: Option<FrontierSizes<'a, T, U, D>>, // TODO: Bench when replacing with DashMap
+    frontier_sizes: Option<FrontierSizes<'a, T, D>>, // TODO: Bench when replacing with DashMap
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> Graph<'a, T, D> {
     /// Create a new `Graph` from the given `clusters` and `edges`. The easiest
     /// and most efficient way to construct a graph is from methods in
     /// `Manifold`.
@@ -134,7 +134,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
     ///
     /// * `clusters`: The set of `Cluster`s with which to build the `Graph`.
     /// * `edges`: The set of `Edge`s with which to build the `Graph`.
-    pub fn new(clusters: ClusterSet<'a, T, U, D>, edges: EdgeSet<'a, T, U, D>) -> Self {
+    pub fn new(clusters: ClusterSet<'a, T, D>, edges: EdgeSet<'a, T, D>) -> Self {
         assert!(!clusters.is_empty());
 
         let (population, min_depth, max_depth) =
@@ -149,7 +149,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
                 });
 
         let adjacency_map = {
-            let mut adjacency_map: AdjacencyMap<T, U, D> = clusters.iter().map(|&c| (c, HashSet::new())).collect();
+            let mut adjacency_map: AdjacencyMap<T, D> = clusters.iter().map(|&c| (c, HashSet::new())).collect();
             edges.iter().for_each(|&e| {
                 adjacency_map.get_mut(e.left()).unwrap().insert(e.right());
                 adjacency_map.get_mut(e.right()).unwrap().insert(e.left());
@@ -171,9 +171,14 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
         }
     }
 
-    fn compute_distance_matrix(&self) -> Vec<Vec<U>> {
-        let indices: HashMap<_, _> = self.ordered_clusters.iter().enumerate().map(|(i, &c)| (c, i)).collect();
-        let mut matrix: Vec<Vec<U>> = vec![vec![U::zero(); self.vertex_cardinality()]; self.vertex_cardinality()];
+    fn compute_distance_matrix(&self) -> Vec<Vec<f64>> {
+        let indices = self
+            .ordered_clusters
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| (c, i))
+            .collect::<HashMap<_, _>>();
+        let mut matrix = vec![vec![0.; self.vertex_cardinality()]; self.vertex_cardinality()];
         self.edges.iter().for_each(|&e| {
             let i = *indices.get(e.left()).unwrap();
             let j = *indices.get(e.right()).unwrap();
@@ -200,7 +205,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
         self.adjacency_matrix = Some(
             self.distance_matrix()
                 .iter()
-                .map(|row| row.iter().map(|v| !v.is_zero()).collect())
+                .map(|row| row.iter().map(|v| *v != 0.).collect())
                 .collect(),
         );
         self
@@ -229,7 +234,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
     }
 
     #[allow(clippy::manual_retain)]
-    pub fn find_component_clusters(&'a self) -> Vec<ClusterSet<'a, T, U, D>> {
+    pub fn find_component_clusters(&'a self) -> Vec<ClusterSet<'a, T, D>> {
         let mut components = Vec::new();
 
         let mut unvisited = self.clusters.clone();
@@ -247,11 +252,11 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
         components
     }
 
-    pub fn clusters(&self) -> &ClusterSet<'a, T, U, D> {
+    pub fn clusters(&self) -> &ClusterSet<'a, T, D> {
         &self.clusters
     }
 
-    pub fn edges(&self) -> &EdgeSet<'a, T, U, D> {
+    pub fn edges(&self) -> &EdgeSet<'a, T, D> {
         &self.edges
     }
 
@@ -279,15 +284,15 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
         (self.min_depth, self.max_depth)
     }
 
-    pub fn adjacency_map(&'a self) -> &AdjacencyMap<T, U, D> {
+    pub fn adjacency_map(&'a self) -> &AdjacencyMap<T, D> {
         &self.adjacency_map
     }
 
-    pub fn ordered_clusters(&self) -> &[&Cluster<'a, T, U, D>] {
+    pub fn ordered_clusters(&self) -> &[&Cluster<'a, T, D>] {
         &self.ordered_clusters
     }
 
-    pub fn distance_matrix(&self) -> &[Vec<U>] {
+    pub fn distance_matrix(&self) -> &Vec<Vec<f64>> {
         self.distance_matrix
             .as_ref()
             .expect("Please call `with_distance_matrix` on the Graph before using `distance_matrix`.")
@@ -307,7 +312,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
             .unwrap()
     }
 
-    fn assert_contains(&self, c: &Cluster<'a, T, U, D>) -> Result<(), String> {
+    fn assert_contains(&self, c: &Cluster<'a, T, D>) -> Result<(), String> {
         if self.clusters.contains(&c) {
             Ok(())
         } else {
@@ -315,27 +320,27 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
         }
     }
 
-    pub fn unchecked_vertex_degree(&'a self, c: &Cluster<'a, T, U, D>) -> usize {
+    pub fn unchecked_vertex_degree(&'a self, c: &Cluster<'a, T, D>) -> usize {
         self.unchecked_neighbors_of(c).len()
     }
 
-    pub fn vertex_degree(&'a self, c: &Cluster<'a, T, U, D>) -> Result<usize, String> {
+    pub fn vertex_degree(&'a self, c: &Cluster<'a, T, D>) -> Result<usize, String> {
         self.assert_contains(c)?;
         Ok(self.unchecked_vertex_degree(c))
     }
 
-    pub fn unchecked_neighbors_of(&'a self, c: &Cluster<'a, T, U, D>) -> &ClusterSet<T, U, D> {
+    pub fn unchecked_neighbors_of(&'a self, c: &Cluster<'a, T, D>) -> &ClusterSet<T, D> {
         self.adjacency_map.get(c).unwrap()
     }
 
-    pub fn neighbors_of(&'a self, c: &Cluster<'a, T, U, D>) -> Result<&ClusterSet<T, U, D>, String> {
+    pub fn neighbors_of(&'a self, c: &Cluster<'a, T, D>) -> Result<&ClusterSet<T, D>, String> {
         self.assert_contains(c)?;
         Ok(self.unchecked_neighbors_of(c))
     }
 
-    pub fn unchecked_traverse(&'a self, start: &'a Cluster<'a, T, U, D>) -> (ClusterSet<T, U, D>, Vec<usize>) {
-        let mut visited: HashSet<&Cluster<T, U, D>> = HashSet::new();
-        let mut frontier: HashSet<&Cluster<T, U, D>> = HashSet::new();
+    pub fn unchecked_traverse(&'a self, start: &'a Cluster<'a, T, D>) -> (ClusterSet<T, D>, Vec<usize>) {
+        let mut visited: HashSet<&Cluster<T, D>> = HashSet::new();
+        let mut frontier: HashSet<&Cluster<T, D>> = HashSet::new();
         frontier.insert(start);
         let mut frontier_sizes: Vec<usize> = Vec::new();
 
@@ -354,12 +359,12 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn traverse(&'a self, start: &'a Cluster<'a, T, U, D>) -> Result<(ClusterSet<T, U, D>, Vec<usize>), String> {
+    pub fn traverse(&'a self, start: &'a Cluster<'a, T, D>) -> Result<(ClusterSet<T, D>, Vec<usize>), String> {
         self.assert_contains(start)?;
         Ok(self.unchecked_traverse(start))
     }
 
-    pub fn unchecked_frontier_sizes(&'a self, c: &'a Cluster<'a, T, U, D>) -> &[usize] {
+    pub fn unchecked_frontier_sizes(&'a self, c: &'a Cluster<'a, T, D>) -> &[usize] {
         self.frontier_sizes
             .as_ref()
             .expect("Please call `with_eccentricities` before using this method.")
@@ -367,16 +372,16 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> Graph<'a, T, U, D> {
             .unwrap()
     }
 
-    pub fn frontier_sizes(&'a self, c: &'a Cluster<'a, T, U, D>) -> Result<&[usize], String> {
+    pub fn frontier_sizes(&'a self, c: &'a Cluster<'a, T, D>) -> Result<&[usize], String> {
         self.assert_contains(c)?;
         Ok(self.unchecked_frontier_sizes(c))
     }
 
-    pub fn unchecked_eccentricity(&'a self, c: &'a Cluster<'a, T, U, D>) -> usize {
+    pub fn unchecked_eccentricity(&'a self, c: &'a Cluster<'a, T, D>) -> usize {
         self.unchecked_frontier_sizes(c).len()
     }
 
-    pub fn eccentricity(&'a self, c: &'a Cluster<'a, T, U, D>) -> Result<usize, String> {
+    pub fn eccentricity(&'a self, c: &'a Cluster<'a, T, D>) -> Result<usize, String> {
         self.assert_contains(c)?;
         Ok(self.unchecked_eccentricity(c))
     }

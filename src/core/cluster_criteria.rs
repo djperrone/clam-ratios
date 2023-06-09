@@ -4,17 +4,17 @@ use super::cluster::Cluster;
 use super::dataset::Dataset;
 use super::number::Number;
 
-pub trait PartitionCriterion<T: Number, U: Number, D: Dataset<T, U>>: std::fmt::Debug + Send + Sync {
-    fn check(&self, c: &Cluster<T, U, D>) -> bool;
+pub trait PartitionCriterion<T: Number, D: Dataset<T, f64>>: std::fmt::Debug + Send + Sync {
+    fn check(&self, c: &Cluster<T, D>) -> bool;
 }
 
 #[derive(Debug)]
-pub struct PartitionCriteria<T: Number, U: Number, D: Dataset<T, U>> {
-    criteria: Vec<Box<dyn PartitionCriterion<T, U, D>>>,
+pub struct PartitionCriteria<T: Number, D: Dataset<T, f64>> {
+    criteria: Vec<Box<dyn PartitionCriterion<T, D>>>,
     check_all: bool,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartitionCriteria<T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> PartitionCriteria<T, D> {
     pub fn new(check_all: bool) -> Self {
         Self {
             criteria: Vec::new(),
@@ -32,12 +32,12 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartitionCriteria<T, U, D> {
         self
     }
 
-    pub fn with_custom(mut self, c: Box<dyn PartitionCriterion<T, U, D>>) -> Self {
+    pub fn with_custom(mut self, c: Box<dyn PartitionCriterion<T, D>>) -> Self {
         self.criteria.push(c);
         self
     }
 
-    pub fn check(&self, cluster: &Cluster<'a, T, U, D>) -> bool {
+    pub fn check(&self, cluster: &Cluster<'a, T, D>) -> bool {
         !cluster.is_singleton()
             && if self.check_all {
                 self.criteria.iter().all(|c| c.check(cluster))
@@ -50,8 +50,8 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> PartitionCriteria<T, U, D> {
 #[derive(Debug, Clone)]
 struct MaxDepth(usize);
 
-impl<T: Number, U: Number, D: Dataset<T, U>> PartitionCriterion<T, U, D> for MaxDepth {
-    fn check(&self, c: &Cluster<T, U, D>) -> bool {
+impl<T: Number, D: Dataset<T, f64>> PartitionCriterion<T, D> for MaxDepth {
+    fn check(&self, c: &Cluster<T, D>) -> bool {
         c.depth() < self.0
     }
 }
@@ -59,8 +59,8 @@ impl<T: Number, U: Number, D: Dataset<T, U>> PartitionCriterion<T, U, D> for Max
 #[derive(Debug, Clone)]
 struct MinCardinality(usize);
 
-impl<T: Number, U: Number, D: Dataset<T, U>> PartitionCriterion<T, U, D> for MinCardinality {
-    fn check(&self, c: &Cluster<T, U, D>) -> bool {
+impl<T: Number, D: Dataset<T, f64>> PartitionCriterion<T, D> for MinCardinality {
+    fn check(&self, c: &Cluster<T, D>) -> bool {
         c.cardinality() > self.0
     }
 }

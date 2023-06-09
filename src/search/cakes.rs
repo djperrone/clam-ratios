@@ -9,30 +9,27 @@ use crate::core::number::Number;
 use crate::utils::helpers;
 
 #[derive(Debug)]
-pub struct CAKES<'a, T: Number, U: Number, D: Dataset<T, U>> {
+pub struct CAKES<'a, T: Number, D: Dataset<T, f64>> {
     dataset: &'a D,
-    root: Cluster<'a, T, U, D>,
+    root: Cluster<'a, T, D>,
     depth: usize,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> CAKES<'a, T, D> {
+    #[allow(unused_variables)]
     pub fn new(dataset: &'a D, seed: Option<u64>) -> Self {
-        let root = if let Some(seed) = seed {
-            Cluster::new_root(dataset).with_seed(seed)
-        } else {
-            Cluster::new_root(dataset)
-        };
+        let root = Cluster::new_root(dataset);
         let depth = 0;
         CAKES { dataset, root, depth }
     }
 
-    pub fn build(mut self, criteria: &PartitionCriteria<T, U, D>) -> Self {
-        self.root = self.root.par_partition(criteria, true);
+    pub fn build(mut self, criteria: &PartitionCriteria<T, D>) -> Self {
+        self.root = self.root.partition(criteria, true);
         self.depth = self.root.max_leaf_depth();
         self
     }
 
-    pub fn root(&self) -> &Cluster<'a, T, U, D> {
+    pub fn root(&self) -> &Cluster<'a, T, D> {
         &self.root
     }
 
@@ -40,28 +37,28 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
         self.depth
     }
 
-    pub fn radius(&self) -> U {
+    pub fn radius(&self) -> f64 {
         self.root.radius()
     }
 
-    pub fn diameter(&self) -> U {
-        self.root.radius() * U::from(2).unwrap()
+    pub fn diameter(&self) -> f64 {
+        self.root.radius() * 2.
     }
 
     #[inline(never)]
-    pub fn batch_rnn_search(&self, queries: &[&Vec<T>], radius: U) -> Vec<Vec<(usize, U)>> {
+    pub fn batch_rnn_search(&self, queries: &[&Vec<T>], radius: f64) -> Vec<Vec<(usize, f64)>> {
         queries.iter().map(|&query| self.rnn_search(query, radius)).collect()
     }
 
     #[inline(never)]
-    pub fn par_batch_rnn_search(&self, queries: &[&Vec<T>], radius: U) -> Vec<Vec<(usize, U)>> {
+    pub fn par_batch_rnn_search(&self, queries: &[&Vec<T>], radius: f64) -> Vec<Vec<(usize, f64)>> {
         queries
             .par_iter()
             .map(|&query| self.rnn_search(query, radius))
             .collect()
     }
 
-    pub fn rnn_search(&self, query: &[T], radius: U) -> Vec<(usize, U)> {
+    pub fn rnn_search(&self, query: &[T], radius: f64) -> Vec<(usize, f64)> {
         // Tree search.
         let [confirmed, straddlers] = {
             let mut confirmed = Vec::new();
@@ -72,7 +69,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
             while !candidates.is_empty() {
                 (terminal, non_terminal) = candidates
                     .drain(..)
-                    .map(|c| (c, self.dataset.query_to_one(query, c.arg_center())))
+                    .map(|c| (c, c.distance_to_query(query)))
                     .filter(|&(c, d)| d <= (c.radius() + radius))
                     .partition(|&(c, d)| (c.radius() + d) <= radius);
                 confirmed.append(&mut terminal);
@@ -82,12 +79,14 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
 
                 candidates = non_terminal
                     .drain(..)
-                    .flat_map(|(c, d)| {
-                        if d < c.radius() {
-                            c.overlapping_children(query, radius)
-                        } else {
-                            c.children().unwrap().to_vec()
-                        }
+                    .flat_map(|(c, _)| {
+                        // TODO: Add `overlapping_children` method to Cluster
+                        // if d < c.radius() {
+                        //     c.overlapping_children(query, radius)
+                        // } else {
+                        //     c.children().unwrap().to_vec()
+                        // }
+                        c.children()
                     })
                     .collect();
             }
@@ -118,21 +117,21 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     }
 
     #[inline(never)]
-    pub fn batch_knn_search(&self, queries: &[&Vec<T>], k: usize) -> Vec<Vec<(usize, U)>> {
+    pub fn batch_knn_search(&self, queries: &[&Vec<T>], k: usize) -> Vec<Vec<(usize, f64)>> {
         queries.iter().map(|&query| self.knn_search(query, k)).collect()
     }
 
     #[inline(never)]
-    pub fn par_batch_knn_search(&self, queries: &[&Vec<T>], k: usize) -> Vec<Vec<(usize, U)>> {
+    pub fn par_batch_knn_search(&self, queries: &[&Vec<T>], k: usize) -> Vec<Vec<(usize, f64)>> {
         queries.par_iter().map(|&query| self.knn_search(query, k)).collect()
     }
 
-    pub fn knn_search(&self, query: &[T], k: usize) -> Vec<(usize, U)> {
-        let mut candidates = priority_queue::PriorityQueue::<&Cluster<T, U, D>, RevNumber<U>>::new();
-        let d = self.root.distance_to_instance(query);
+    pub fn knn_search(&self, query: &[T], k: usize) -> Vec<(usize, f64)> {
+        let mut candidates = priority_queue::PriorityQueue::<&Cluster<T, D>, RevNumber<f64>>::new();
+        let d = self.root.distance_to_query(query);
         candidates.push(&self.root, RevNumber(self.d_min(&self.root, d)));
 
-        let mut hits = priority_queue::PriorityQueue::<usize, OrdNumber<U>>::new();
+        let mut hits = priority_queue::PriorityQueue::<usize, OrdNumber<f64>>::new();
         // let mut count = 0;
 
         // stop if we have enough hits and the farthest hit is closer than the closest cluster by delta_min.
@@ -151,9 +150,9 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     }
 
     #[inline(always)]
-    fn d_min(&self, c: &Cluster<T, U, D>, d: U) -> U {
+    fn d_min(&self, c: &Cluster<T, D>, d: f64) -> f64 {
         if d < c.radius() {
-            U::zero()
+            0.
         } else {
             d - c.radius()
         }
@@ -163,11 +162,15 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     fn pop_till_leaf(
         &self,
         query: &[T],
-        candidates: &mut priority_queue::PriorityQueue<&Cluster<T, U, D>, RevNumber<U>>,
+        candidates: &mut priority_queue::PriorityQueue<&Cluster<T, D>, RevNumber<f64>>,
     ) {
+        // TODO: Deal with cases with more children.
         while !candidates.peek().unwrap().0.is_leaf() {
-            let [l, r] = candidates.pop().unwrap().0.children().unwrap();
-            let [dl, dr] = [l.distance_to_instance(query), r.distance_to_instance(query)];
+            let [l, r] = {
+                let children = candidates.pop().unwrap().0.children();
+                [children[0], children[1]]
+            };
+            let [dl, dr] = [l.distance_to_query(query), r.distance_to_query(query)];
             candidates.push(l, RevNumber(self.d_min(l, dl)));
             candidates.push(r, RevNumber(self.d_min(r, dr)));
         }
@@ -177,8 +180,8 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     fn leaf_into_hits(
         &self,
         query: &[T],
-        hits: &mut priority_queue::PriorityQueue<usize, OrdNumber<U>>,
-        candidates: &mut priority_queue::PriorityQueue<&Cluster<T, U, D>, RevNumber<U>>,
+        hits: &mut priority_queue::PriorityQueue<usize, OrdNumber<f64>>,
+        candidates: &mut priority_queue::PriorityQueue<&Cluster<T, D>, RevNumber<f64>>,
     ) {
         let (leaf, RevNumber(d)) = candidates.pop().unwrap();
         let is = leaf.indices();
@@ -193,7 +196,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     }
 
     // reduce hits down to k elements, including ties for the kth farthest element.
-    fn trim_hits(&self, k: usize, hits: &mut priority_queue::PriorityQueue<usize, OrdNumber<U>>) {
+    fn trim_hits(&self, k: usize, hits: &mut priority_queue::PriorityQueue<usize, OrdNumber<f64>>) {
         if hits.len() > k {
             let mut potential_ties = vec![hits.pop().unwrap()];
             while hits.len() >= k {
@@ -207,7 +210,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
         }
     }
 
-    // pub fn knn_search(&self, query: &[T], k: usize) -> Vec<(usize, U)> {
+    // pub fn knn_search(&self, query: &[T], k: usize) -> Vec<(usize, f64)> {
     //     let mut sieve = KnnSieve::new(&self.root, query, k);
     //     while !sieve.is_refined() {
     //         sieve.refine_step();
@@ -216,7 +219,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     // }
 
     #[inline(never)]
-    pub fn batch_knn_by_rnn(&'a self, queries: &[&[T]], k: usize) -> Vec<Vec<(usize, U)>> {
+    pub fn batch_knn_by_rnn(&'a self, queries: &[&[T]], k: usize) -> Vec<Vec<(usize, f64)>> {
         queries
             // .par_iter()
             .iter()
@@ -224,22 +227,22 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
             .collect()
     }
 
-    pub fn knn_by_rnn(&'a self, query: &[T], k: usize) -> Vec<(usize, U)> {
+    pub fn knn_by_rnn(&'a self, query: &[T], k: usize) -> Vec<(usize, f64)> {
         let mut radius = EPSILON + self.root.radius().as_f64() / self.root.cardinality().as_f64();
-        let mut hits = self.rnn_search(query, U::from(radius).unwrap());
+        let mut hits = self.rnn_search(query, radius);
 
         while hits.is_empty() {
             radius = EPSILON + 2. * radius;
-            hits = self.rnn_search(query, U::from(radius).unwrap());
+            hits = self.rnn_search(query, radius);
         }
 
         while hits.len() < k {
             let distances = hits.iter().map(|(_, d)| *d).collect::<Vec<_>>();
-            let lfd = helpers::compute_lfd(U::from(radius).unwrap(), &distances);
+            let lfd = helpers::compute_lfd(radius, &distances);
             let factor = (k.as_f64() / hits.len().as_f64()).powf(1. / (lfd + EPSILON));
             assert!(factor > 1.);
             radius *= factor;
-            hits = self.rnn_search(query, U::from(radius).unwrap());
+            hits = self.rnn_search(query, radius);
         }
 
         hits.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
@@ -248,7 +251,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
 
     // TODO: Add knn version
     #[inline(never)]
-    pub fn batch_linear_search(&self, queries: &[&[T]], radius: U) -> Vec<Vec<(usize, U)>> {
+    pub fn batch_linear_search(&self, queries: &[&[T]], radius: f64) -> Vec<Vec<(usize, f64)>> {
         queries
             // .par_iter()
             .iter()
@@ -257,7 +260,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> CAKES<'a, T, U, D> {
     }
 
     // TODO: Add knn version
-    pub fn linear_search(&self, query: &[T], radius: U, indices: Option<Vec<usize>>) -> Vec<(usize, U)> {
+    pub fn linear_search(&self, query: &[T], radius: f64, indices: Option<Vec<usize>>) -> Vec<(usize, f64)> {
         let indices = indices.unwrap_or_else(|| self.root.indices());
         let distances = self.dataset.query_to_many(query, &indices);
         indices
@@ -323,7 +326,7 @@ mod tests {
     #[test]
     fn test_search() {
         let data = vec![vec![0., 0.], vec![1., 1.], vec![2., 2.], vec![3., 3.]];
-        let metric = euclidean::<f32, f32>;
+        let metric = euclidean::<f32, f64>;
         let name = "test".to_string();
         let dataset = VecVec::new(data, metric, name, false);
         let criteria = PartitionCriteria::new(true);

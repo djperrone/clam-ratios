@@ -46,7 +46,7 @@ fn main() {
         for f in [10, 25, 50, 100].into_iter().rev() {
             // for k in [1, 10, 100] {
             println!("Running rnn-search on {data_name} with {num_queries} queries and factor = {f} ...");
-            let radius = cakes.radius() / f as f32;
+            let radius = cakes.radius() / f as f64;
 
             let start = Instant::now();
             let results = cakes.par_batch_rnn_search(&queries, radius);

@@ -2,12 +2,14 @@ use criterion::*;
 
 use clam::core::cluster_criteria::PartitionCriteria;
 use clam::core::dataset::VecVec;
-use clam::distances::f32::METRICS;
 use clam::search::cakes::CAKES;
 use clam::utils::helpers;
+use utils::distances::METRICS;
+
+mod utils;
 
 fn cakes(c: &mut Criterion) {
-    for (metric_name, metric) in METRICS {
+    for &(metric_name, metric) in METRICS {
         let mut group = c.benchmark_group(format!("knn-{metric_name}"));
         group.significance_level(0.025).sample_size(10);
 

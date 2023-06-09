@@ -7,11 +7,11 @@ use crate::core::graph::Graph;
 use crate::core::number::Number;
 use crate::utils::helpers;
 
-pub type ClusterScores<'a, T, U, D> = HashMap<&'a Cluster<'a, T, U, D>, f64>;
+pub type ClusterScores<'a, T, D> = HashMap<&'a Cluster<'a, T, D>, f64>;
 pub type InstanceScores = HashMap<usize, f64>;
 
-pub trait GraphScorer<'a, T: Number, U: Number, D: Dataset<T, U>>: Hash {
-    fn call(&self, graph: &'a Graph<'a, T, U, D>) -> (ClusterScores<'a, T, U, D>, Vec<f64>) {
+pub trait GraphScorer<'a, T: Number, D: Dataset<T, f64>>: Hash {
+    fn call(&self, graph: &'a Graph<'a, T, D>) -> (ClusterScores<'a, T, D>, Vec<f64>) {
         let cluster_scores = {
             let mut cluster_scores = self.score_graph(graph);
             if self.normalize_on_clusters() {
@@ -47,9 +47,9 @@ pub trait GraphScorer<'a, T: Number, U: Number, D: Dataset<T, U>>: Hash {
 
     fn normalize_on_clusters(&self) -> bool;
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D>;
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D>;
 
-    fn inherit_scores(&self, scores: &ClusterScores<T, U, D>) -> InstanceScores {
+    fn inherit_scores(&self, scores: &ClusterScores<T, D>) -> InstanceScores {
         scores
             .iter()
             .flat_map(|(&c, &s)| c.indices().into_iter().map(move |i| (i, s)))
@@ -72,7 +72,7 @@ impl Hash for ClusterCardinality {
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for ClusterCardinality {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for ClusterCardinality {
     fn name(&self) -> &str {
         "cluster_cardinality"
     }
@@ -85,7 +85,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Cl
         true
     }
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D> {
         graph
             .ordered_clusters()
             .iter()
@@ -102,7 +102,7 @@ impl Hash for ComponentCardinality {
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for ComponentCardinality {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for ComponentCardinality {
     fn name(&self) -> &str {
         "component_cardinality"
     }
@@ -115,7 +115,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Co
         true
     }
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D> {
         graph
             .find_component_clusters()
             .iter()
@@ -135,7 +135,7 @@ impl Hash for VertexDegree {
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for VertexDegree {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for VertexDegree {
     fn name(&self) -> &str {
         "vertex_degree"
     }
@@ -148,7 +148,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Ve
         true
     }
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D> {
         graph
             .ordered_clusters()
             .iter()
@@ -157,35 +157,38 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Ve
     }
 }
 
-pub struct ParentCardinality<'a, T: Number, U: Number, D: Dataset<T, U>> {
-    root: &'a Cluster<'a, T, U, D>,
+pub struct ParentCardinality<'a, T: Number, D: Dataset<T, f64>> {
+    root: &'a Cluster<'a, T, D>,
     weight: Box<dyn (Fn(usize) -> f64) + Send + Sync>,
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> ParentCardinality<'a, T, U, D> {
-    pub fn new(root: &'a Cluster<'a, T, U, D>) -> Self {
+impl<'a, T: Number, D: Dataset<T, f64>> ParentCardinality<'a, T, D> {
+    pub fn new(root: &'a Cluster<'a, T, D>) -> Self {
         let weight = Box::new(|d: usize| 1. / (d as f64).sqrt());
         Self { root, weight }
     }
 
-    pub fn ancestry(&self, c: &'a Cluster<'a, T, U, D>) -> Vec<&'a Cluster<'a, T, U, D>> {
+    pub fn ancestry(&self, c: &'a Cluster<'a, T, D>) -> Vec<&'a Cluster<'a, T, D>> {
         c.history().into_iter().fold(vec![self.root], |mut ancestors, turn| {
             let last = ancestors.last().unwrap();
-            let [left, right] = last.children().unwrap();
-            let child = if turn { right } else { left };
+            let [left, right] = {
+                let children = last.children();
+                [children[0], children[1]]
+            };
+            let child = if *turn { right } else { left };
             ancestors.push(child);
             ancestors
         })
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> Hash for ParentCardinality<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> Hash for ParentCardinality<'a, T, D> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         "parent_cardinality".hash(state)
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for ParentCardinality<'a, T, U, D> {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for ParentCardinality<'a, T, D> {
     fn name(&self) -> &str {
         "parent_cardinality"
     }
@@ -198,7 +201,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Pa
         true
     }
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D> {
         graph
             .ordered_clusters()
             .iter()
@@ -228,10 +231,10 @@ impl GraphNeighborhood {
         Self { eccentricity_fraction }
     }
 
-    fn num_steps<'a, T: Number, U: Number, D: Dataset<T, U>>(
+    fn num_steps<'a, T: Number, D: Dataset<T, f64>>(
         &self,
-        graph: &'a Graph<'a, T, U, D>,
-        c: &'a Cluster<'a, T, U, D>,
+        graph: &'a Graph<'a, T, D>,
+        c: &'a Cluster<'a, T, D>,
     ) -> usize {
         let steps = graph.unchecked_eccentricity(c) as f64 * self.eccentricity_fraction;
         1 + steps as usize
@@ -244,7 +247,7 @@ impl Hash for GraphNeighborhood {
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for GraphNeighborhood {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for GraphNeighborhood {
     fn name(&self) -> &str {
         "graph_neighborhood"
     }
@@ -257,7 +260,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for Gr
         true
     }
 
-    fn score_graph(&self, graph: &'a Graph<'a, T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<'a, T, D>) -> ClusterScores<'a, T, D> {
         graph
             .ordered_clusters()
             .iter()
@@ -290,7 +293,7 @@ impl StationaryProbabilities {
     }
 }
 
-impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for StationaryProbabilities {
+impl<'a, T: Number, D: Dataset<T, f64>> GraphScorer<'a, T, D> for StationaryProbabilities {
     fn name(&self) -> &str {
         "stationary_probabilities"
     }
@@ -304,7 +307,7 @@ impl<'a, T: Number, U: Number, D: Dataset<T, U>> GraphScorer<'a, T, U, D> for St
     }
 
     #[allow(unused_variables)]
-    fn score_graph(&self, graph: &'a Graph<T, U, D>) -> ClusterScores<'a, T, U, D> {
+    fn score_graph(&self, graph: &'a Graph<T, D>) -> ClusterScores<'a, T, D> {
         todo!()
     }
 }

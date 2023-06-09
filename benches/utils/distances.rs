@@ -1,23 +1,11 @@
 use std::f64::EPSILON;
 
-pub fn from_name(name: &str) -> fn(&[f32], &[f32]) -> f64 {
-    match name {
-        "euclidean" => euclidean,
-        "euclidean_sq" => euclidean_sq,
-        "manhattan" => manhattan,
-        "cosine" => cosine,
-        // "hamming" => hamming,
-        // "jaccard" => jaccard,
-        _ => panic!("Distance {name} is not implemented in clam."),
-    }
-}
-
 #[allow(clippy::type_complexity)]
 pub const METRICS: &[(&str, fn(&[f32], &[f32]) -> f64)] = &[
     ("euclidean", euclidean),
     ("euclidean_sq", euclidean_sq),
     ("manhattan", manhattan),
-    // ("cosine", cosine),
+    ("cosine", cosine),
 ];
 
 #[inline(always)]

@@ -9,6 +9,7 @@ pub trait Dataset<T: Number, U: Number>: std::fmt::Debug + Send + Sync {
     fn dimensionality(&self) -> usize;
     fn is_metric_expensive(&self) -> bool;
     fn indices(&self) -> Vec<usize>;
+    fn get(&self, index: usize) -> &[T];
     fn one_to_one(&self, left: usize, right: usize) -> U;
     fn query_to_one(&self, query: &[T], index: usize) -> U;
 
@@ -124,6 +125,7 @@ pub trait Dataset<T: Number, U: Number>: std::fmt::Debug + Send + Sync {
             }
         }
     }
+
     /// Calculates the geometric median of a set of indexed instances. Returns
     /// a value from the set of indices that is the index of the median in the
     /// dataset.
@@ -198,6 +200,10 @@ impl<T: Number, U: Number> Dataset<T, U> for VecVec<T, U> {
 
     fn indices(&self) -> Vec<usize> {
         (0..self.data.len()).collect()
+    }
+
+    fn get(&self, index: usize) -> &[T] {
+        &self.data[index]
     }
 
     fn one_to_one(&self, left: usize, right: usize) -> U {
