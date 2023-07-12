@@ -22,6 +22,7 @@ mod core;
 pub mod needleman_wunch;
 pub(crate) mod utils;
 
+pub(crate) use crate::core::cluster;
 pub(crate) use crate::core::cluster::Cluster;
 pub use crate::{
     cakes::{knn, rnn, Cakes},

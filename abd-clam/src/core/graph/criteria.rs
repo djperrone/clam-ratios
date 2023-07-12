@@ -1,4 +1,5 @@
 //! Criteria used for selecting `Cluster`s for `Graph`s.
 
-/// A `Box`ed function that assigns a score for a given `Cluster`.
+/// A function that assigns a score for a given `Cluster` using the `Ratios` of
+/// the `Cluster`.
 pub type MetaMLScorer = fn(crate::cluster::Ratios) -> f64;

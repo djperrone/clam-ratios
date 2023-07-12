@@ -10,6 +10,6 @@ mod _cluster;
 mod criteria;
 mod tree;
 
-pub use _cluster::Cluster;
+pub use _cluster::{Cluster, Ratios};
 pub use criteria::{PartitionCriteria, PartitionCriterion};
 pub use tree::Tree;
