@@ -339,7 +339,7 @@ impl<'a, U: Number> Graph<'a, U> {
                 .map(|&c| {
                     let eccentricity = self
                         .traverse(c)
-                        .unwrap_or_else(|_| unreachable!("Building graph ensures clusters are in the graph"));
+                        .unwrap_or_else(|_| unreachable!("Clusters are guaranteed to be in the graph"));
                     (c, eccentricity.1)
                 })
                 .collect(),
