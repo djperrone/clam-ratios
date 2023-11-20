@@ -13,7 +13,7 @@ use crate::core::cluster::Ratios;
 ///
 pub fn get_meta_ml_scorers<'a>() -> Vec<(&'a str, crate::core::graph::MetaMLScorer)> {
     vec![
-        ("lr_manhattan_sc", Box::new(lr_manhattan_sc)),
+        ("lr_manhattan_sc", Box::new(lr_manhattan_sc))/*,
         ("lr_manhattan_cc", Box::new(lr_manhattan_cc)),
         ("lr_manhattan_gn", Box::new(lr_manhattan_gn)),
         ("lr_manhattan_cr", Box::new(lr_manhattan_cr)),
@@ -36,7 +36,7 @@ pub fn get_meta_ml_scorers<'a>() -> Vec<(&'a str, crate::core::graph::MetaMLScor
         ("dt_euclidean_gn", Box::new(dt_euclidean_gn)),
         ("dt_euclidean_cr", Box::new(dt_euclidean_cr)),
         ("dt_euclidean_sp", Box::new(dt_euclidean_sp)),
-        ("dt_euclidean_vd", Box::new(dt_euclidean_vd)),
+        ("dt_euclidean_vd", Box::new(dt_euclidean_vd)),*/
     ]
 }
 
