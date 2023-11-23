@@ -13,12 +13,12 @@ fn create_graph() {
 
     let edges = detect_edges(&selected_clusters, raw_tree.data());
 
-    let mut edges_ref = EdgeSet::new();
-    for edge in edges.iter() {
-        edges_ref.insert(edge);
-    }
+    // let mut edges_ref = EdgeSet::new();
+    // for edge in edges.iter() {
+    //     edges_ref.insert(edge);
+    // }
 
-    let graph = Graph::new(selected_clusters.clone(), edges_ref);
+    let graph = Graph::new(selected_clusters.clone(), edges.clone());
 
     if let Ok(graph) = graph {
         // assert edges and clusters are correct
@@ -62,12 +62,7 @@ fn adjacency_map() {
 
     let edges = detect_edges(&selected_clusters, raw_tree.data());
 
-    let mut edges_ref = EdgeSet::new();
-    for edge in edges.iter() {
-        edges_ref.insert(edge);
-    }
-
-    if let Ok(graph) = Graph::new(selected_clusters.clone(), edges_ref) {
+    if let Ok(graph) = Graph::new(selected_clusters.clone(), edges.clone()) {
         let adj_map = graph.adjacency_map();
         assert_eq!(adj_map.len(), graph.clusters().len());
 

@@ -11,7 +11,7 @@ use crate::core::cluster::Cluster;
 pub type ClusterSet<'a, U> = HashSet<&'a Cluster<U>>;
 
 /// A set of edges with references to edges in a graph.
-pub type EdgeSet<'a, U> = HashSet<&'a Edge<'a, U>>;
+pub type EdgeSet<'a, U> = HashSet<Edge<'a, U>>;
 
 /// A map that represents the adjacency relationship between clusters.
 pub type AdjacencyMap<'a, U> = HashMap<&'a Cluster<U>, ClusterSet<'a, U>>;
@@ -108,7 +108,7 @@ impl<'a, U: Number> Edge<'a, U> {
     /// # Returns
     ///
     /// A reference to the `Cluster` at the left end of the `Edge`.
-    pub const fn left(&self) -> &Cluster<U> {
+    pub const fn left(&self) -> &'a Cluster<U> {
         self.left
     }
 
@@ -117,7 +117,7 @@ impl<'a, U: Number> Edge<'a, U> {
     /// # Returns
     ///
     /// A reference to the `Cluster` at the right end of the `Edge`.
-    pub const fn right(&self) -> &Cluster<U> {
+    pub const fn right(&self) -> &'a Cluster<U> {
         self.right
     }
 
@@ -173,7 +173,7 @@ pub struct Graph<'a, U: Number> {
     /// A set of `Cluster`s in the graph.
     clusters: ClusterSet<'a, U>,
     /// A set of `Edge`s representing connections between `Cluster`s in the graph.
-    edges: EdgeSet<'a, U>,
+    edges: HashSet<Edge<'a, U>>,
     /// A map that represents the adjacency relationships between clusters.
     adjacency_map: AdjacencyMap<'a, U>,
     /// The total population represented by the clusters in the graph.
@@ -212,7 +212,7 @@ impl<'a, U: Number> Graph<'a, U> {
     /// Returns an error if the provided `clusters` set is empty, indicating that a graph cannot be
     /// created with no clusters. Also returns an error if an edge refers to a cluster that is not in
     /// the `clusters` set.
-    pub fn new(clusters: ClusterSet<'a, U>, edges: EdgeSet<'a, U>) -> Result<Self, String> {
+    pub fn new(clusters: ClusterSet<'a, U>, edges: HashSet<Edge<'a, U>>) -> Result<Self, String> {
         if clusters.is_empty() {
             return Err("Cannot create a graph with no clusters.".to_string());
         }
@@ -230,7 +230,7 @@ impl<'a, U: Number> Graph<'a, U> {
 
         let adjacency_map = {
             let mut adjacency_map: AdjacencyMap<U> = clusters.iter().map(|&c| (c, HashSet::new())).collect();
-            for &e in &edges {
+            for e in &edges {
                 adjacency_map
                     .get_mut(e.left())
                     .ok_or_else(|| format!("Left cluster not found: {:?}", e.left()))?
@@ -272,7 +272,7 @@ impl<'a, U: Number> Graph<'a, U> {
     fn compute_distance_matrix(&self) -> Vec<Vec<U>> {
         let indices: HashMap<_, _> = self.ordered_clusters.iter().enumerate().map(|(i, &c)| (c, i)).collect();
         let mut matrix: Vec<Vec<U>> = vec![vec![U::zero(); self.vertex_cardinality()]; self.vertex_cardinality()];
-        self.edges.iter().for_each(|&e| {
+        self.edges.iter().for_each(|e| {
             let i = *indices
                 .get(e.left())
                 .unwrap_or_else(|| unreachable!("We asserted all clusters are in the edge set when building the graph"));
