@@ -21,6 +21,7 @@ mod cakes;
 pub mod chaoda;
 mod core;
 pub(crate) mod utils;
+mod visualization;
 
 pub use crate::{
     cakes::{knn, rnn, Cakes},
