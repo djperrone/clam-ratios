@@ -1,0 +1,102 @@
+use crate::chaoda::pretrained_models;
+use crate::core::cluster::Ratios;
+use crate::{Cluster, ClusterSet};
+use distances::Number;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
+
+struct ClusterWrapper<'a, U: Number> {
+    cluster: &'a Cluster<U>,
+    score: f64,
+}
+
+impl<'a, U: Number> PartialEq for ClusterWrapper<'a, U> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
+}
+
+impl<'a, U: Number> Eq for ClusterWrapper<'a, U> {}
+
+impl<'a, U: Number> Ord for ClusterWrapper<'a, U> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.partial_cmp(&other.score).unwrap_or(Ordering::Equal)
+    }
+}
+
+impl<'a, U: Number> PartialOrd for ClusterWrapper<'a, U> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn avg_score(ratio: Ratios) -> f64 {
+    let mut score: f64 = 0.0;
+    let mut count: f64 = 0.0;
+    let scorers = pretrained_models::get_meta_ml_scorers();
+    for model in scorers {
+        score += model.1(ratio);
+        count += 1.0;
+    }
+    return score / count;
+}
+
+fn score_clusters<'a, U: Number>(
+    root: &'a Cluster<U>,
+    scoring_function: crate::core::graph::MetaMLScorer,
+) -> BinaryHeap<ClusterWrapper<'a, U>> {
+    let mut clusters = root.subtree();
+    let mut scored_clusters: BinaryHeap<ClusterWrapper<'a, U>> = BinaryHeap::new();
+
+    for cluster in clusters {
+        let cluster_score = cluster.ratios().map_or(0.0, |value| scoring_function(value));
+        scored_clusters.push(ClusterWrapper {
+            cluster: &cluster,
+            score: cluster_score,
+        })
+    }
+
+    return scored_clusters;
+}
+
+fn get_clusterset<'a, U: Number>(clusters: BinaryHeap<ClusterWrapper<'a, U>>) -> ClusterSet<'a, U> {
+    let mut cluster_set: HashSet<&'a Cluster<U>> = HashSet::new();
+    let mut clusters: BinaryHeap<&ClusterWrapper<'a, U>> = BinaryHeap::from(clusters.iter().clone().collect::<Vec<_>>());
+
+    while clusters.len() > 0 {
+        let best = clusters.pop().unwrap().cluster;
+        clusters = clusters
+            .into_iter()
+            .filter(|item| !item.cluster.is_ancestor_of(best) && !item.cluster.is_descendant_of(best))
+            .collect();
+        cluster_set.insert(best);
+    }
+
+    return cluster_set;
+}
+
+fn get_function_from_string<'a>(
+    input_string: &str,
+    functions: &'a Vec<(&'a str, crate::core::graph::MetaMLScorer)>,
+) -> Option<crate::core::graph::MetaMLScorer> {
+    for (name, function) in functions {
+        if name == &input_string {
+            return Some(function.clone());
+        }
+    }
+    None
+}
+
+pub fn select_clusters_for_visualization<U: Number>(
+    root: &Cluster<U>,
+    scoring_function: Option<String>,
+) -> ClusterSet<U> {
+    let scorers = pretrained_models::get_meta_ml_scorers();
+    let scoring_function = get_function_from_string(
+        scoring_function.unwrap_or("lr_euclidean_cc".to_string()).as_str(),
+        &scorers,
+    )
+    .unwrap();
+    let scored_clusters = score_clusters(root, scoring_function);
+    return get_clusterset(scored_clusters);
+}
