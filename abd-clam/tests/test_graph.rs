@@ -9,7 +9,7 @@ fn create_graph() {
     let data = utils::gen_dataset(1000, 10, 42, utils::euclidean);
     let partition_criteria: PartitionCriteria<f32> = PartitionCriteria::default();
     let raw_tree = Tree::new(data, Some(42)).partition(&partition_criteria);
-    let selected_clusters = select_clusters(raw_tree.root());
+    let selected_clusters = select_clusters(raw_tree.root(), 5);
 
     let edges = detect_edges(&selected_clusters, raw_tree.data());
 
@@ -58,7 +58,7 @@ fn adjacency_map() {
     let data = utils::gen_dataset(1000, 10, 42, utils::euclidean);
     let partition_criteria: PartitionCriteria<f32> = PartitionCriteria::default();
     let raw_tree = Tree::new(data, Some(42)).partition(&partition_criteria);
-    let selected_clusters = select_clusters(raw_tree.root());
+    let selected_clusters = select_clusters(raw_tree.root(), 5);
 
     let edges = detect_edges(&selected_clusters, raw_tree.data());
 

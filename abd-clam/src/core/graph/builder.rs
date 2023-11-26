@@ -4,11 +4,10 @@ use std::collections::HashSet;
 
 /// Filler function to select clusters for graph
 /// TODO! Replace with proper cluster selection algorithm
-pub fn select_clusters<U: Number>(root: &Cluster<U>) -> ClusterSet<U> {
-    let height = root.depth();
+pub fn select_clusters<U: Number>(root: &Cluster<U>, depth: usize) -> ClusterSet<U> {
     let mut selected_clusters = ClusterSet::new();
     for c in root.subtree() {
-        if c.depth() == height / 2 {
+        if c.depth() == depth {
             selected_clusters.insert(c);
         }
     }
