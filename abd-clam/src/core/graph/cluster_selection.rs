@@ -5,9 +5,9 @@ use distances::Number;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 
-struct ClusterWrapper<'a, U: Number> {
+pub struct ClusterWrapper<'a, U: Number> {
     cluster: &'a Cluster<U>,
-    score: f64,
+    pub score: f64,
 }
 
 impl<'a, U: Number> PartialEq for ClusterWrapper<'a, U> {
@@ -30,7 +30,7 @@ impl<'a, U: Number> PartialOrd for ClusterWrapper<'a, U> {
     }
 }
 
-fn avg_score(ratio: Ratios) -> f64 {
+pub fn avg_score(ratio: Ratios) -> f64 {
     let mut score: f64 = 0.0;
     let mut count: f64 = 0.0;
     let scorers = pretrained_models::get_meta_ml_scorers();
@@ -41,7 +41,7 @@ fn avg_score(ratio: Ratios) -> f64 {
     return score / count;
 }
 
-fn score_clusters<'a, U: Number>(
+pub fn score_clusters<'a, U: Number>(
     root: &'a Cluster<U>,
     scoring_function: crate::core::graph::MetaMLScorer,
 ) -> BinaryHeap<ClusterWrapper<'a, U>> {
@@ -59,11 +59,16 @@ fn score_clusters<'a, U: Number>(
     return scored_clusters;
 }
 
-fn get_clusterset<'a, U: Number>(clusters: BinaryHeap<ClusterWrapper<'a, U>>) -> ClusterSet<'a, U> {
+pub fn get_clusterset<'a, U: Number>(clusters: BinaryHeap<ClusterWrapper<'a, U>>) -> ClusterSet<'a, U> {
     let mut cluster_set: HashSet<&'a Cluster<U>> = HashSet::new();
     let mut clusters: BinaryHeap<&ClusterWrapper<'a, U>> = BinaryHeap::from(clusters.iter().clone().collect::<Vec<_>>());
 
-    while clusters.len() > 0 {
+    clusters.retain(|item| item.cluster.depth() > 3);
+
+    loop {
+        if clusters.len() == 0 {
+            break;
+        }
         let best = clusters.pop().unwrap().cluster;
         clusters = clusters
             .into_iter()
@@ -75,7 +80,7 @@ fn get_clusterset<'a, U: Number>(clusters: BinaryHeap<ClusterWrapper<'a, U>>) ->
     return cluster_set;
 }
 
-fn get_function_from_string<'a>(
+pub fn get_function_from_string<'a>(
     input_string: &str,
     functions: &'a Vec<(&'a str, crate::core::graph::MetaMLScorer)>,
 ) -> Option<crate::core::graph::MetaMLScorer> {
