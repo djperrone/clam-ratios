@@ -105,3 +105,15 @@ pub fn select_clusters_for_visualization<U: Number>(
     let scored_clusters = score_clusters(root, scoring_function);
     return get_clusterset(scored_clusters);
 }
+
+pub fn select_clusters<U: Number>(root: &Cluster<U>, scoring_function: String) -> Result<ClusterSet<U>, String> {
+    let scorers = pretrained_models::get_meta_ml_scorers();
+
+    return match get_function_from_string(scoring_function.as_str(), &scorers) {
+        Some(scoring_function) => {
+            let scored_clusters = score_clusters(root, scoring_function);
+            Ok(get_clusterset(scored_clusters))
+        }
+        None => Err(format!("Scoring function {} not found", scoring_function)),
+    };
+}

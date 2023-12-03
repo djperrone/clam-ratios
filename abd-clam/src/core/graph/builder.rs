@@ -4,15 +4,15 @@ use std::collections::HashSet;
 
 /// Filler function to select clusters for graph
 /// TODO! Replace with proper cluster selection algorithm
-pub fn select_clusters<U: Number>(root: &Cluster<U>, depth: usize) -> ClusterSet<U> {
-    let mut selected_clusters = ClusterSet::new();
-    for c in root.subtree() {
-        if c.depth() == depth {
-            selected_clusters.insert(c);
-        }
-    }
-    selected_clusters
-}
+// pub fn select_clusters<U: Number>(root: &Cluster<U>, depth: usize) -> ClusterSet<U> {
+//     let mut selected_clusters = ClusterSet::new();
+//     for c in root.subtree() {
+//         if c.depth() == depth {
+//             selected_clusters.insert(c);
+//         }
+//     }
+//     selected_clusters
+// }
 
 /// Detects edges between clusters based on their spatial relationships.
 ///
